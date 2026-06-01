@@ -1,0 +1,125 @@
+[project]
+name = "exordos_metapaas"
+description = "MetaPaaS runtime for Exordos Core — single control-plane hosting many PaaS types as plugins"
+readme = "README.md"
+authors = [{name = "Genesis Corporation", email = "mail@gmelikov.ru"}]
+dynamic = ["version"]
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+classifiers = [
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "oslo.config>=3.22.2,<10.0.0",  # Apache-2.0
+    "restalchemy>=15.0.0,<16.0.0",  # Apache-2.0
+    "gcl_iam>=1.0.3,<2.0.0",  # Apache-2.0
+    "gcl_looper>=1.2.3,<2.0.0",  # Apache-2.0
+    "gcl_sdk>=3.0.0,<4.0.0",  # Apache-2.0
+    "bjoern>=3.2.2",  # BSD License (BSD-3-Clause)
+    "PyYAML>=6.0.0,<7.0.0",  # MIT
+    "requests>=2.28.0,<3.0.0",  # Apache-2.0
+]
+
+[project.urls]
+homepage = "https://github.com/infraguys/exordos_metapaas/"
+
+[project.optional-dependencies]
+dev = [
+    "tox>=4.0.0",
+    "tox-uv",
+    "pytest>=7.0.0",
+]
+test = [
+    "coverage>=4.0",
+    "pytest>=8.0.0,<9.0.0",
+    "pytest-timer>=1.0.0,<2.0.0",
+    "mock>=3.0.5,<4.0.0",
+]
+ruff = [
+    "ruff",
+]
+mypy = [
+    "mypy",
+]
+
+[build-system]
+requires = [
+    "setuptools>=75.3.3",
+    "setuptools_scm>=8"
+]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+
+[project.scripts]
+exordos-metapaas-user-api = "exordos_metapaas.cmd.user_api:main"
+exordos-metapaas-status-api = "exordos_metapaas.cmd.status_api:main"
+exordos-metapaas-orch-api = "exordos_metapaas.cmd.orch_api:main"
+exordos-metapaas-gservice = "exordos_metapaas.cmd.gservice:main"
+# Registry-driven config generation (gservice + core-agent) and runtime plugin
+# install. Adding a PaaS needs no rebuild: install the package, re-render, restart.
+exordos-metapaas-render-config = "exordos_metapaas.cmd.render_config:main"
+exordos-metapaas-install-paas = "exordos_metapaas.cmd.install_paas:main"
+
+# PaaS plugins register a PaaSDefinition here. The bundled demo plugin proves
+# the entry-point -> routes -> migrations wiring end-to-end.
+[project.entry-points."exordos_metapaas_paas"]
+demo = "metapaas_demo.definition:DemoDefinition"
+
+[tool.uv]
+package = true
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py310"
+exclude = [".venv", "build", "dist", "output", "__pycache__"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+fixable = ["ALL"]
+
+[tool.coverage.run]
+branch = true
+source = ["exordos_metapaas"]
+command_line = "-m pytest -s exordos_metapaas/tests/unit"
+omit = ["exordos_metapaas/tests/*", ".venv"]
+
+[tool.coverage.report]
+exclude_also = [
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]
+ignore_errors = true
+
+[tool.coverage.html]
+directory = "cover"
+
+[tool.coverage.xml]
+output = "cover/coverage.xml"
+
+[tool.mypy]
+files = ["exordos_metapaas"]
+python_version = "3.12"
+disallow_untyped_defs = true
+show_error_codes = true
+no_implicit_optional = true
+warn_return_any = false
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["exordos_metapaas*", "metapaas_demo*"]
+
+[tool.setuptools.package-data]
+metapaas_demo = ["migrations/*.py"]

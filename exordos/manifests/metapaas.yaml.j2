@@ -1,0 +1,110 @@
+name: "metapaas"
+description: "Exordos MetaPaaS control-plane element"
+schema_version: 1
+version: "{{ version }}"
+api_version: "v1"
+
+resources:
+
+  # IAM
+  $core.iam.organizations:
+    metapaas_organization:
+      name: "MetaPaaS organization"
+      description: "MetaPaaS organization"
+
+  $core.iam.projects:
+    metapaas_project:
+      # Pinned so PaaS consumer manifests (and instances) can reference the
+      # metapaas project by a stable id without a cross-element import.
+      uuid: 4d657461-0000-0000-0000-000000000002
+      name: "MetaPaaS project"
+      organization: $core.iam.organizations.$metapaas_organization:uuid
+      description: "MetaPaaS project"
+
+  $core.iam.users:
+    metapaas_user:
+      uuid: 4d657461-0000-0000-0000-000000000001
+      username: metapaas
+      first_name: "MetaPaaS system user"
+      last_name: "MetaPaaS system user"
+      email: "noreply+metapaas@exordos.com"
+      password: $core.secret.passwords.$metapaas_user_password:value
+
+  $core.iam.rolebinding:
+    metapaas_role_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      user: 4d657461-0000-0000-0000-000000000001
+      project: $core.iam.projects.$metapaas_project:uuid
+
+  # Secret
+  $core.secret.passwords:
+    metapaas_user_password:
+      name: metapaas_user_password
+      description: "MetaPaaS system user password"
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      constructor:
+        kind: plain
+      method: AUTO_HEX
+
+  # Compute (single control-plane node hosting all PaaS plugins)
+  $core.compute.nodes:
+    metapaas_cp:
+      name: metapaas-cp
+      cores: 2
+      ram: 2048
+      disk_spec:
+        kind: "disks"
+        disks:
+          - size: 10
+            image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/metapaas/{{ version }}/images/exordos-metapaas.raw.zst"
+            label: root
+          # Persistent data disk: the embedded control-plane DB lives here so it
+          # survives root/image replacement.
+          - size: 10
+            label: data
+
+  # Config injected into the control-plane node
+  $core.config.configs:
+    metapaas_cp_config:
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      path: /etc/exordos_init.txt
+      target:
+        kind: node
+        node: $core.compute.nodes.$metapaas_cp:uuid
+      body:
+        kind: text
+        content: |
+          f"
+          IAM_USER_NAME={$core.iam.users.$metapaas_user:username}
+          IAM_USER_PASS={$core.secret.passwords.$metapaas_user_password:value}
+          PROJECT_ID={$core.iam.projects.$metapaas_project:uuid}
+          GC_HS256_JWKS_ENCRYPTION_KEY={$metapaas.imports.$var_hs256_jwks_encryption_key:value}
+          "
+
+  $metapaas.imports.$core_local_domain.records:
+    metapaas_cp:
+      domain: "$metapaas.imports.$core_local_domain:uuid"
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      type: "A"
+      record:
+        kind: "A"
+        name: "metapaas-cp"
+        address: "$core.compute.nodes.$metapaas_cp:default_network:ipv4"
+
+imports:
+  core_local_domain:
+    element: "$core"
+    kind: "resource"
+    link: "$core.dns.domains.$local_domain"
+  var_hs256_jwks_encryption_key:
+    element: "$core"
+    kind: "resource"
+    link: "$core.vs.variables.$hs256_jwks_encryption_key"
+
+exports:
+  node:
+    link: "$core.compute.nodes.$metapaas_cp"
+  # The metapaas project a PaaS installs its resources into. PaaS provider
+  # manifests import this instead of hardcoding the project id.
+  project:
+    link: "$core.iam.projects.$metapaas_project"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Exordos MetaPaaS Status API
+After=network-online.target postgresql.service
+
+[Service]
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStartPre=/bin/sleep 2
+ExecStart=exordos-metapaas-status-api --config-file /etc/exordos_metapaas/exordos_metapaas.conf
+
+[Install]
+WantedBy=multi-user.target

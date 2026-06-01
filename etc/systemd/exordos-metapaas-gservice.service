@@ -1,0 +1,13 @@
+[Unit]
+Description=Exordos MetaPaaS General Service (builders + scheduler + infra agent)
+After=network-online.target postgresql.service
+
+[Service]
+TimeoutStopSec=5
+Restart=on-failure
+RestartSec=5s
+KillSignal=SIGINT
+ExecStart=exordos-metapaas-gservice --config-file /etc/exordos_metapaas/exordos_metapaas.conf
+
+[Install]
+WantedBy=multi-user.target
