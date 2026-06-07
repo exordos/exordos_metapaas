@@ -47,7 +47,10 @@ class TestLooksLikeUrl:
 
 class TestSpec:
     def test_name_and_version_pinned(self) -> None:
-        assert PluginReconciler._spec(_FakePlugin("mypkg", version="1.2.3")) == "mypkg==1.2.3"
+        assert (
+            PluginReconciler._spec(_FakePlugin("mypkg", version="1.2.3"))
+            == "mypkg==1.2.3"
+        )
 
     def test_no_version_returns_package(self) -> None:
         assert PluginReconciler._spec(_FakePlugin("mypkg")) == "mypkg"
@@ -63,3 +66,25 @@ class TestSpec:
     def test_tar_gz_path_ignores_version(self) -> None:
         tgz = "/dist/mypkg-1.0.tar.gz"
         assert PluginReconciler._spec(_FakePlugin(tgz, version="1.0")) == tgz
+
+
+class TestShouldReinstall:
+    def test_version_mismatch_needs_reinstall(self) -> None:
+        plugin = _FakePlugin("mypkg", version="2.0.0")
+        assert PluginReconciler._should_reinstall(plugin, "1.0.0") is True
+
+    def test_version_match_no_reinstall(self) -> None:
+        plugin = _FakePlugin("mypkg", version="2.0.0")
+        assert PluginReconciler._should_reinstall(plugin, "2.0.0") is False
+
+    def test_no_version_pin_no_reinstall(self) -> None:
+        plugin = _FakePlugin("mypkg", version="")
+        assert PluginReconciler._should_reinstall(plugin, "1.0.0") is False
+
+    def test_url_package_always_reinstalls(self) -> None:
+        plugin = _FakePlugin("http://repo/pkg-2.0.whl")
+        assert PluginReconciler._should_reinstall(plugin, "1.0.0") is True
+
+    def test_whl_path_always_reinstalls(self) -> None:
+        plugin = _FakePlugin("/dist/mypkg-2.0-py3-none-any.whl")
+        assert PluginReconciler._should_reinstall(plugin, "") is True

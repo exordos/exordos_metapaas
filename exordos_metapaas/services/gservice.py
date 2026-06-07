@@ -18,6 +18,7 @@ that talks to Core to materialize NodeSet/Config resources. PaaS plugins
 contribute their own Infra/PaaS builders, instantiated dynamically from the
 plugin registry at startup — no launchpad config wiring needed.
 """
+
 from __future__ import annotations
 
 import logging

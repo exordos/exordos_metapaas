@@ -28,6 +28,7 @@ Credentials come from the environment (the config injected via
 re-render the DB password is recovered from the existing gservice config so it
 stays stable across plugin installs.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -44,11 +45,14 @@ DEFAULT_GSERVICE_CONF = "/etc/exordos_metapaas/exordos_metapaas.conf"
 DEFAULT_CORE_AGENT_CONF = "/etc/exordos_metapaas/core_agent.conf"
 
 # Core endpoints used by the db-back core-agent and the gservice UAgent.
-CORE_API_BASE_URL = "http://core.local.genesis-core.tech:11010"
+CORE_API_BASE_URL = "http://core.local.genesis-core.tech:80/api/core"
 CORE_ORCH_ENDPOINT = "http://core.local.genesis-core.tech:11011"
 CORE_STATUS_ENDPOINT = "http://core.local.genesis-core.tech:11012"
 
 WORK_DIR = "/var/lib/exordos/exordos_metapaas"
+
+EM_PROJECT_ID = "12345678-c625-4fee-81d5-f691897b8142"
+
 
 def _agent_kind(element_name, slug, subpath):
     """Build the EM kind string for a PaaS plugin resource.
@@ -115,6 +119,10 @@ def _recover_from_config(path):
         )
     except (configparser.Error, KeyError):
         pass
+    try:
+        recovered["AUDIENCE"] = parser.get("iam", "audience")
+    except (configparser.Error, KeyError):
+        pass
     return {k: v for k, v in recovered.items() if v}
 
 
@@ -126,6 +134,7 @@ def _collect_env(gservice_conf):
         "GC_HS256_JWKS_ENCRYPTION_KEY": os.environ.get(
             "GC_HS256_JWKS_ENCRYPTION_KEY", ""
         ),
+        "AUDIENCE": os.environ.get("AUDIENCE", ""),
         "GC_PG_USER": os.environ.get("GC_PG_USER", "metapaas"),
         "GC_PG_DB": os.environ.get("GC_PG_DB", "metapaas"),
         "GC_PG_PASS": os.environ.get("GC_PG_PASS", ""),
@@ -158,6 +167,7 @@ def render_gservice_conf(env):
         "",
         "[iam]",
         "hs256_jwks_decryption_key = " + env["GC_HS256_JWKS_ENCRYPTION_KEY"],
+        "audience = " + env["AUDIENCE"],
         "",
         "[HS256]",
         "",
@@ -187,9 +197,7 @@ def render_core_agent_conf(env, definitions):
         "em_metapaas_types": "exordos_metapaas.dm.models:PaaSType",
     }
     filters = {
-        "em_metapaas_types": "project_id:{project}".format(
-            project=env["PROJECT_ID"]
-        ),
+        "em_metapaas_types": "project_id:{project}".format(project=env["PROJECT_ID"]),
     }
     for definition in definitions.values():
         slug = definition.slug
@@ -197,8 +205,8 @@ def render_core_agent_conf(env, definitions):
         for subpath, model in definition.get_agent_models().items():
             models[_agent_kind(element, slug, subpath)] = model
         for subpath, field in definition.get_agent_filters().items():
-            filters[_agent_kind(element, slug, subpath)] = (
-                "{field}:{project}".format(field=field, project=env["PROJECT_ID"])
+            filters[_agent_kind(element, slug, subpath)] = "{field}:{project}".format(
+                field=field, project=EM_PROJECT_ID
             )
 
     lines = [

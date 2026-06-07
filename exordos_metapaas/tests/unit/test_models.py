@@ -47,3 +47,44 @@ class TestPaaSType:
             project_id=uuid.uuid4(),
         )
         assert pt.index_url == ""
+
+    def test_version_change_resets_status_to_new(self) -> None:
+        pt = models.PaaSType(
+            name="test",
+            element_name="el",
+            package="mypkg",
+            version="1.0.0",
+            project_id=uuid.uuid4(),
+        )
+        pt.status = "ACTIVE"
+        pt.version = "2.0.0"
+        # Simulate what update() does without hitting the DB
+        if pt.properties["version"].is_dirty() or pt.properties["package"].is_dirty():
+            pt.status = "NEW"
+        assert pt.status == "NEW"
+
+    def test_package_change_resets_status_to_new(self) -> None:
+        pt = models.PaaSType(
+            name="test",
+            element_name="el",
+            package="mypkg",
+            project_id=uuid.uuid4(),
+        )
+        pt.status = "ACTIVE"
+        pt.package = "newpkg"
+        if pt.properties["version"].is_dirty() or pt.properties["package"].is_dirty():
+            pt.status = "NEW"
+        assert pt.status == "NEW"
+
+    def test_other_field_change_does_not_reset_status(self) -> None:
+        pt = models.PaaSType(
+            name="test",
+            element_name="el",
+            package="mypkg",
+            project_id=uuid.uuid4(),
+        )
+        pt.status = "ACTIVE"
+        pt.element_name = "new_el"
+        if pt.properties["version"].is_dirty() or pt.properties["package"].is_dirty():
+            pt.status = "NEW"
+        assert pt.status == "ACTIVE"

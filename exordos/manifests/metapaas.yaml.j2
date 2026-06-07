@@ -79,6 +79,7 @@ resources:
           IAM_USER_PASS={$core.secret.passwords.$metapaas_user_password:value}
           PROJECT_ID={$core.iam.projects.$metapaas_project:uuid}
           GC_HS256_JWKS_ENCRYPTION_KEY={$metapaas.imports.$var_hs256_jwks_encryption_key:value}
+          AUDIENCE={$metapaas.imports.$var_iam_default_client_id:value}
           "
 
   $metapaas.imports.$core_local_domain.records:
@@ -100,6 +101,10 @@ imports:
     element: "$core"
     kind: "resource"
     link: "$core.vs.variables.$hs256_jwks_encryption_key"
+  var_iam_default_client_id:
+    element: "$core"
+    kind: "resource"
+    link: "$core.vs.variables.$iam_default_client_id"
 
 exports:
   node:

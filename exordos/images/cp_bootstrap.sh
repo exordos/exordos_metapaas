@@ -32,6 +32,7 @@ export IAM_USER_NAME="${IAM_USER_NAME:-exordos_metapaas}"
 export IAM_USER_PASS="${IAM_USER_PASS:-exordos_metapaas}"
 export PROJECT_ID="${PROJECT_ID}"
 export GC_HS256_JWKS_ENCRYPTION_KEY="${GC_HS256_JWKS_ENCRYPTION_KEY:-}"
+export AUDIENCE="${AUDIENCE:-}"
 
 # Embedded control-plane database. Password is generated locally and persisted
 # in the rendered config on the persistent data disk (never leaves the node).
@@ -95,6 +96,42 @@ for d in discover_paas().values():
 '); do
     ra-apply-migration --config-dir "/etc/exordos_metapaas/" --path "$mpath"
 done
+
+# --- Seed CP node's own RSA key into local DB --------------------------------
+# The private key is placed on disk during image provision (same key Core stores
+# in ua_node_encryption_keys). DatabaseOrchClient (used by the gservice UAgent)
+# looks up the key in the local DB to verify the node before registration.
+python3 - <<'PYEOF'
+import sys
+from oslo_config import cfg
+from restalchemy.common import config_opts as ra_config_opts
+from restalchemy.storage.sql import engines
+from restalchemy.common import contexts
+from restalchemy.dm import filters as dm_filters
+from gcl_sdk.agents.universal import constants as c, utils as ua_utils
+from gcl_sdk.agents.universal.dm import models as ua_models
+
+ra_config_opts.register_posgresql_db_opts(cfg.CONF)
+cfg.CONF(['--config-dir', '/etc/exordos_metapaas/'])
+engines.engine_factory.configure_postgresql_factory(cfg.CONF)
+
+try:
+    private_key = open(c.PRIVATE_KEY_PATH).read().strip()
+except FileNotFoundError:
+    print(f"Private key not found at {c.PRIVATE_KEY_PATH}, skipping key seed")
+    sys.exit(0)
+
+node_uuid = ua_utils.system_uuid()
+with contexts.Context().session_manager() as session:
+    existing = ua_models.NodeEncryptionKey.objects.get_one_or_none(
+        filters={"uuid": dm_filters.EQ(str(node_uuid))}
+    )
+    if existing is None:
+        ua_models.NodeEncryptionKey(uuid=node_uuid, private_key=private_key).insert(session=session)
+        print(f"Seeded encryption key for node {node_uuid}")
+    else:
+        print(f"Encryption key for {node_uuid} already present, skipping")
+PYEOF
 
 deactivate
 

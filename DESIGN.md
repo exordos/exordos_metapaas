@@ -1,7 +1,7 @@
 # Exordos MetaPaaS — Design
 
-> Status: draft plan. Decisions on key forks are locked (see below).
-> First PaaS to migrate to the contract: **s3**.
+> Phases 1–3 complete. First PaaS built on this contract: **mail** (exordos_mail).
+> First migration target: **s3**.
 
 ## Goal
 
@@ -93,6 +93,22 @@ class PaaSDefinition:                      # loaded via entry-point (like gcl_sd
 The PaaS author writes **only**: models + validation, `infra_spec`, `node_payload`,
 DP driver (mostly already in gcl_sdk), `dp_install.sh` + `dp_bootstrap.sh` scripts for the DP image, one migration.
 
+### DP driver idempotency invariant
+
+The DP agent calls the driver on every reconciliation cycle (~every few seconds). The driver
+**must** be idempotent:
+
+- `dump_to_dp()` — compare new config with existing file before writing; only reload the
+  service if content actually changed (`_write_file_atomic` pattern). **Never call
+  `systemctl reload/restart` unconditionally.**
+- `restore_from_dp()` — read the **actual on-disk state** into `self`. Returning empty
+  defaults (e.g. `self.accounts = {}`) when real data exists on disk makes actual≠target
+  every cycle → `dump_to_dp()` fires every cycle → service restarts in a loop.
+- CP models with salted hashes (bcrypt, sha512crypt): if core-agent stores plaintext in the
+  orch target and re-applies it every cycle, a naive `hash(plaintext)` generates a new salt
+  each time → DB hash changes → DP sees diff → restart loop. Fix: use
+  `property.old_value` to verify plaintext against the stored hash before re-hashing.
+
 The plugin is packaged as a **versioned Python package**. In the PaaSDefinition resource it is
 specified in one of two ways (both installed via `pip` with no extra logic):
 - **pip name + version** from the configured pip index — `package: "exordos-paas-s3"`, `version: "1.2.3"`;
@@ -182,24 +198,20 @@ For the spike DB — embedded postgres on the CP node (no dbaas); password is ge
 
 ## Phased plan
 
-1. **`exordos_metapaas` skeleton** — build the runtime: orch_api/status_api/agent-API **taken from
-   gcl_sdk as-is** (only cmd + mounting); user_api host, gservice, common, systemd —
-   thin wrappers around gcl_sdk. Own manifest: CP node + pg.
-2. **`PaaSDefinition` contract** + loader via entry-point (`load_from_entry_point`,
-   same as drivers are loaded) + dynamic route mounting (`setattr`, as in `app.py`) +
-   migration-runner (`MigrationEngine` from gcl_sdk) + auto-IAM. *Spike risk is low* — both
-   mechanisms are already proven in code; only the "entry-point → routes → IAM" chain needs verification.
-3. **PaaS installer** — universal-agent capability driver `kind=paas_definition`: reconcile
-   PaaSDefinition resource from element-manager → `pip install` package → migrations →
-   auto-IAM → rolling-restart workers. Registry of installed → `status_api`. *Criterion:*
-   `exordos em elements install paas-X.yaml` brings up a PaaS **without rebuilding metapaas**.
+1. ✅ **`exordos_metapaas` skeleton** — runtime: orch_api/status_api/agent-API from gcl_sdk,
+   user_api host, gservice, common, systemd. Own manifest: CP node + pg.
+2. ✅ **`PaaSDefinition` contract** — loader via entry-point, dynamic route mounting,
+   migration-runner (`MigrationEngine`), auto-IAM.
+3. ✅ **PaaS installer (PluginReconciler)** — watches `metapaas_paas_types`, pip-installs
+   missing/upgraded packages, applies migrations, restarts workers. Version-change detection:
+   `PaaSType.update()` resets `status=NEW` when `version`/`package` changes.
 4. **Generic bases** — `PaaSInstance`, `InstanceChildModel`, `PaaSVersion`, generic
-   `InfraBuilder`/`PaaSBuilder` consuming `infra_spec`/`node_payload` from the definition.
-5. **`exordos_paas_s3` plugin** — migrate `user_api/dm+api`, `infra` (only `get_infra` +
-   config-template), `paas` (`_get_*`), driver, migration; package as artifact + paas element.
-   Delete all boilerplate from the s3 repo. Criterion: s3 instance brings up only DP nodes, no s3 CP nodes.
-6. **Contract validation** — run existing s3 functional tests against metapaas.
-   Then use the same contract for `db`, then `mail` from scratch as proof that "new PaaS = plugin."
+   `InfraBuilder`/`PaaSBuilder`. *(Partially done in exordos_mail; needs extraction into runtime.)*
+5. **`exordos_paas_s3` plugin** — migrate `user_api/dm+api`, `infra`, `paas`, driver,
+   migration; package as artifact + paas element. Delete boilerplate from s3 repo.
+6. **Contract validation** — existing s3 functional tests against metapaas.
+   **`exordos_mail` is the first complete "new PaaS = plugin" proof** (instances, accounts,
+   DKIM, Exim, functional tests).
 
 ## Risks
 

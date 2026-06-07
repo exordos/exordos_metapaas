@@ -35,18 +35,40 @@ class TestPaaSDefinitionDefaults:
         assert PaaSDefinition().get_agent_filters() == {}
 
 
+def _make_demo_ep():
+    import importlib.metadata as im
+    from unittest.mock import MagicMock
+    from metapaas_demo.definition import DemoDefinition
+
+    ep = MagicMock(spec=im.EntryPoint)
+    ep.name = "demo"
+    ep.load.return_value = DemoDefinition
+    return ep
+
+
 class TestDiscoverPaas:
     def test_finds_demo_plugin(self) -> None:
-        # The bundled demo plugin registers via the exordos_metapaas_paas entry-point.
-        result = discover_paas()
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
         assert "demo" in result
 
     def test_demo_slug_matches_key(self) -> None:
-        result = discover_paas()
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
         assert result["demo"].slug == "demo"
 
     def test_demo_migrations_path_set(self) -> None:
-        result = discover_paas()
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
         assert result["demo"].get_migrations_path() is not None
 
     def test_duplicate_slug_raises(self) -> None:
@@ -55,14 +77,10 @@ class TestDiscoverPaas:
 
         ep1 = MagicMock()
         ep1.name = "ep1"
-        ep1.load.return_value = type(
-            "Dup", (PaaSDefinition,), {"slug": "clash"}
-        )
+        ep1.load.return_value = type("Dup", (PaaSDefinition,), {"slug": "clash"})
         ep2 = MagicMock()
         ep2.name = "ep2"
-        ep2.load.return_value = type(
-            "Dup2", (PaaSDefinition,), {"slug": "clash"}
-        )
+        ep2.load.return_value = type("Dup2", (PaaSDefinition,), {"slug": "clash"})
 
         with patch.object(im, "entry_points", return_value=[ep1, ep2]):
             try:

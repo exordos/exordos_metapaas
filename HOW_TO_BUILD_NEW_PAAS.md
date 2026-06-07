@@ -16,22 +16,45 @@ This guide walks through building a new PaaS service (e.g., mail server, databas
 │
 ├─ exordos_metapaas (runtime)
 │  ├─ CP image (metapaas-cp VM node)
-│  ├─ Plugin reconciler (watches metapaas project, installs plugins on CP)
-│  └─ Base schema (PaaS instance, version, status, nodes)
+│  ├─ Plugin reconciler (watches metapaas_paas_types, pip-installs plugins on CP)
+│  └─ Base schema (PaaSType, PaaSVersion, status, nodes)
 │
-└─ metapaas_<name> (your new plugin)
-   ├─ exordos/exordos.yaml (build config: DP image + manifest)
-   ├─ exordos/images/dp_install.sh (runs during DP image build)
-   ├─ exordos/images/dp_bootstrap.sh (runs on first DP node boot)
-   ├─ exordos/manifests/<name>-aas.yaml.j2 (rendered template, deployed to core)
-   ├─ exordos_paas_<name>/ (Python CP code)
-   │  ├─ controllers.py (REST endpoints)
-   │  ├─ models.py (restalchemy models)
-   │  ├─ definition.py (PaaSDefinition contract)
-   │  ├─ driver.py (CapabilityDriver for DP agent)
+└─ exordos_<name>/ (your plugin repo, one Python package)
+   ├─ exordos/
+   │  ├─ exordos.yaml          (build config: DP image + manifest)
+   │  ├─ images/
+   │  │  ├─ dp_install.sh      (runs during DP image build)
+   │  │  └─ dp_bootstrap.sh    (runs on first DP node boot)
+   │  └─ manifests/
+   │     ├─ <name>aas.yaml.j2  (element manifest: IAM, plugin type, DP versions)
+   │     └─ example_<name>.yaml.j2  (declarative example instance for testing)
+   ├─ etc/
+   │  ├─ exordos_metapaas/     (agent .conf + logging.yaml, bundled into DP image)
+   │  └─ systemd/              (exordos-metapaas-<name>-agent.service, -configure.service)
+   ├─ exordos_<name>/          (Python package — CP + DP code, one package)
+   │  ├─ definition.py         (PaaSDefinition: slug, element_name, builders, migrations)
+   │  ├─ constants.py
+   │  ├─ utils.py
+   │  ├─ controlplane/
+   │  │  ├─ dm/models.py       (user-facing CP models: Instance, Version, child resources)
+   │  │  ├─ api/
+   │  │  │  ├─ controllers.py  (REST controllers with IAM)
+   │  │  │  └─ routes.py
+   │  │  ├─ infra/
+   │  │  │  ├─ dm/models.py    (infra-layer models: NodeSet, Config wrappers)
+   │  │  │  └─ services/builder.py  (CoreInfraBuilder: nodes, keys, config regen)
+   │  │  └─ paas/
+   │  │     ├─ dm/models.py    (paas-layer models: Instance view for builder)
+   │  │     └─ services/builder.py  (PaaSBuilder: payload assembly, DP facts sync)
+   │  ├─ dataplane/
+   │  │  └─ driver.py          (MetaDataPlaneModel + CapabilityDriver; runs on DP node)
+   │  ├─ migrations/           (restalchemy migrations, tablename prefix = slug)
    │  └─ tests/
-   ├─ pyproject.toml, tox.ini, Makefile (standard exordos tooling)
-   └─ .github/workflows/ (CI: tests.yaml + func_tests.yaml)
+   │     ├─ unit/              (driver logic, model behaviour — no live stand)
+   │     └─ functional/        (E2E against live stand; conftest.py + prepare_env.py)
+   ├─ pyproject.toml           (entrypoints: exordos_metapaas_paas + gcl_sdk_universal_agent)
+   ├─ tox.ini, Makefile
+   └─ .github/workflows/       (tests.yaml + func_tests.yaml)
 ```
 
 ---
@@ -40,17 +63,16 @@ This guide walks through building a new PaaS service (e.g., mail server, databas
 
 ```bash
 cd ~/exo
-mkdir metapaas_<name>
-cd metapaas_<name>
+mkdir exordos_<name>
+cd exordos_<name>
 
-# Create directories
 mkdir -p exordos/{manifests,images}
-mkdir -p exordos_paas_<name>/{migrations,tests/{unit,functional}}
-mkdir -p etc/systemd
+mkdir -p etc/{exordos_metapaas,systemd}
+mkdir -p exordos_<name>/{controlplane/{dm,api,infra/{dm,services},paas/{dm,services}},dataplane,migrations,tests/{unit,functional}}
 mkdir -p .github/workflows
 ```
 
-There is **no separate `<name>-dp/` directory** — DP build scripts live under `exordos/images/`.
+One Python package `exordos_<name>` contains both CP and DP code. DP build scripts live under `exordos/images/`. Agent config and systemd units live under `etc/`.
 
 ---
 
@@ -136,7 +158,7 @@ The CP code runs on the metapaas-cp VM and provides the REST API.
 
 ### 3.1 Models
 
-**File:** `exordos_paas_<name>/models.py`
+**File:** `exordos_<name>/controlplane/dm/models.py`
 
 Models use `restalchemy.dm` primitives. A service typically needs at minimum a **Version** model (the DP image catalog) and an **Instance** model (what users create). Nested resources (e.g., mail accounts, S3 buckets) are additional models that reference the instance.
 
@@ -193,9 +215,47 @@ Key points:
 - `status` and `ipsv4` are read-only from the user's perspective (set by the orchestrator)
 - **Do not add passwords/secrets to the Instance model** — credentials belong in child resources (accounts, access keys) or are generated on the DP side
 
+**Child resources and `_touch_parent`:** child models (accounts, buckets, etc.) that change the DP payload must bump the parent instance's `updated_at` on every mutation so gservice picks up the change:
+
+```python
+class FooAccount(...):
+    instance = relationships.relationship(FooInstance, required=True, read_only=True)
+    password_hash = properties.property(types.String(...), required=True)
+
+    def _touch_parent(self, session=None):
+        self.instance.update(force=True)
+
+    def insert(self, session=None):
+        self._maybe_hash_password()
+        super().insert(session=session)
+        self._touch_parent(session=session)
+
+    def update(self, session=None, force=False):
+        self._maybe_hash_password()
+        super().update(session=session, force=force)
+        self._touch_parent(session=session)
+
+    def delete(self, session=None, **kwargs):
+        res = super().delete(session=session, **kwargs)
+        self._touch_parent(session=session)
+        return res
+```
+
+**Salted hash fields (`_maybe_hash_password` pattern):** the core-agent stores the original plaintext from the create request in the orch target and re-applies it on every cycle. A naive `sha512_crypt.hash(plaintext)` generates a **new random salt each time** → DB hash changes every ~3s → DP driver sees a diff → service reloads in a loop. Fix: keep the stored hash when plaintext still matches it:
+
+```python
+def _maybe_hash_password(self):
+    if self.password_hash and not _is_crypt_hash(self.password_hash):
+        old_hash = self.properties["password_hash"].old_value  # value before this setattr
+        if old_hash and _is_crypt_hash(old_hash) and sha512_crypt.verify(self.password_hash, old_hash):
+            self.password_hash = old_hash   # same password, keep existing hash
+        else:
+            self.password_hash = sha512_crypt.hash(self.password_hash)
+```
+
 ### 3.2 Controllers
 
-**File:** `exordos_paas_<name>/controllers.py`
+**File:** `exordos_<name>/controlplane/api/controllers.py`
 
 Controllers wire together IAM enforcement and REST routing. Use `gcl_iam.controllers` mixins — they implement the `__policy_service_name__.<resource>.<action>` check against Core IAM automatically.
 
@@ -206,7 +266,7 @@ from restalchemy.api import controllers as ra_controllers
 from restalchemy.api import field_permissions as field_p
 from restalchemy.api import resources as ra_resources
 
-from exordos_paas_foo import models
+from exordos_foo import models
 
 
 class FooController(ra_controllers.RoutesListController):
@@ -255,7 +315,7 @@ How permissions map to manifest:
 
 ### 3.3 PaaS Definition
 
-**File:** `exordos_paas_<name>/definition.py`
+**File:** `exordos_<name>/definition.py` (at package root, not inside controlplane)
 
 This is the plugin's entry point class. The metapaas runtime loads it via the `exordos_metapaas_paas` entrypoint group:
 
@@ -263,7 +323,7 @@ This is the plugin's entry point class. The metapaas runtime loads it via the `e
 import os
 
 from exordos_metapaas.registry import PaaSDefinition
-from exordos_paas_foo import routes
+from exordos_foo import routes
 
 
 class FooDefinition(PaaSDefinition):
@@ -277,10 +337,10 @@ class FooDefinition(PaaSDefinition):
         return os.path.join(os.path.dirname(__file__), "migrations")
 
     def get_builders(self, core_username, core_password, core_api_base_url, project_id):
-        from exordos_paas_foo.infra_builder import CoreInfraBuilder
-        from exordos_paas_foo.infra_models import FooInstance as InfraFooInstance
-        from exordos_paas_foo.paas_builder import FooInstanceBuilder
-        from exordos_paas_foo.paas_models import FooInstance as PaaSFooInstance
+        from exordos_foo.infra_builder import CoreInfraBuilder
+        from exordos_foo.infra_models import FooInstance as InfraFooInstance
+        from exordos_foo.paas_builder import FooInstanceBuilder
+        from exordos_foo.paas_models import FooInstance as PaaSFooInstance
 
         return [
             CoreInfraBuilder(
@@ -295,8 +355,8 @@ class FooDefinition(PaaSDefinition):
 
     def get_agent_models(self):
         return {
-            "versions": "exordos_paas_foo.models:FooVersion",
-            "instances": "exordos_paas_foo.infra_models:FooInstance",
+            "versions": "exordos_foo.models:FooVersion",
+            "instances": "exordos_foo.infra_models:FooInstance",
         }
 
     def get_agent_filters(self):
@@ -308,16 +368,71 @@ class FooDefinition(PaaSDefinition):
 
 > **Critical:** `element_name` must match exactly the element's registered name (what you pass to `exordos em elements install`). The framework derives the version namespace as `$<element_name>.types.<slug>.versions`. If `element_name = "foo"` but the element is registered as `"foo-aas"`, the namespace won't be found and the DP version catalog will be empty.
 
-### 3.4 Plugin Entrypoints in pyproject.toml
+### 3.4 DP Driver
+
+**File:** `exordos_<name>/dataplane/driver.py` (ships inside the DP image; loaded by the universal agent via entrypoint)
+
+The driver implements `MetaDataPlaneModel` and runs on the DP node. The agent calls it every few seconds — **it must be idempotent**.
+
+Three required methods:
+
+```python
+from gcl_sdk.agents.universal.drivers import meta
+
+class FooInstance(meta.MetaDataPlaneModel):
+    # ... property declarations ...
+
+    def dump_to_dp(self) -> None:
+        """Apply target state to system files/services.
+
+        Use _write_file_atomic — only write and reload if content differs.
+        Never call systemctl reload/restart unconditionally.
+        """
+        changed = _write_file_atomic(CONFIG_PATH, self._build_config())
+        if changed:
+            subprocess.run(["systemctl", "reload", "myservice"], check=True)
+
+    def restore_from_dp(self) -> None:
+        """Read ACTUAL on-disk state into self.
+
+        Must reflect reality — not empty defaults. If this returns {} for a
+        field that has data on disk, actual≠target every cycle → dump_to_dp()
+        fires every cycle → service restarts in a loop.
+        """
+        self.accounts = self._read_accounts_from_disk()  # real disk read
+
+    def delete_from_dp(self) -> None:
+        pass  # clean up resources on instance delete
+
+    def update_on_dp(self) -> None:
+        self.dump_to_dp()  # standard delegation
+
+
+def _write_file_atomic(path: str, content: str) -> bool:
+    """Write file only if content changed; return True if it was written."""
+    try:
+        with open(path) as f:
+            if f.read() == content:
+                return False
+    except FileNotFoundError:
+        pass
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(content)
+    os.rename(tmp, path)
+    return True
+```
+
+### 3.5 Plugin Entrypoints in pyproject.toml
 
 ```toml
 # The metapaas runtime discovers your PaaSDefinition via this group
 [project.entry-points."exordos_metapaas_paas"]
-foo = "exordos_paas_foo.definition:FooDefinition"
+foo = "exordos_foo.definition:FooDefinition"
 
 # The core agent discovers your CapabilityDriver via this group
 [project.entry-points."gcl_sdk_universal_agent"]
-FooCapabilityDriver = "exordos_paas_foo.driver:FooCapabilityDriver"
+FooCapabilityDriver = "exordos_foo.driver:FooCapabilityDriver"
 ```
 
 When the `foo-aas` element is installed in exordos_core, the runtime:
@@ -383,7 +498,7 @@ resources:
     foo:
       name: "foo"
       element_name: "foo-aas"      # ← must match the element registration name
-      package: "exordos_paas_foo"
+      package: "exordos_foo"
       index_url: "{{ index_url | default('') }}"
       project_id: "4d657461-0000-0000-0000-000000000002"
 
@@ -451,7 +566,7 @@ build:
     # Plugin package: copied into the image so dp_install.sh can run uv sync
     - dst: /opt/exordos_metapaas
       path:
-        src: ../../metapaas_<name>
+        src: ../../exordos_<name>
       exclude:
         - .venv
         - .tox
@@ -494,14 +609,14 @@ build:
 
 ### 6.1 Unit Tests
 
-**File:** `exordos_paas_<name>/tests/unit/test_driver.py`
+**File:** `exordos_<name>/tests/unit/test_driver.py`  (under `exordos_<name>/tests/`)
 
 Test driver logic and model behaviour in isolation (no live stand needed):
 
 ```python
 import pytest
 from unittest.mock import patch, MagicMock
-from exordos_paas_foo.driver import FooCapabilityDriver
+from exordos_foo.driver import FooCapabilityDriver
 
 
 def test_driver_creates_config_from_accounts():
@@ -511,9 +626,9 @@ def test_driver_creates_config_from_accounts():
 
 ### 6.2 Functional Tests
 
-**File:** `exordos_paas_<name>/tests/functional/test_<name>_e2e.py`
+**File:** `exordos_<name>/tests/functional/test_<name>_provision.py`
 
-Test end-to-end against a live stand using the real CP/DP path. Follow the pattern established in `metapaas_mail` and `metapaas_s3`:
+Test end-to-end against a live stand using the real CP/DP path. Follow the pattern established in `exordos_mail` and `exordos_s3`:
 
 - Use `conftest.py` for instance lifecycle fixtures (create on module start, delete on teardown)
 - Use `prepare_env.py` for CI bootstrap (build + install + wait for ACTIVE)
@@ -534,12 +649,12 @@ def test_service_behaves_after_account_create(api_client, instance_uuid, dp_host
 
 ## Step 7: Standard Tooling (Makefile, tox.ini, pyproject.toml)
 
-Copy from `metapaas_mail` or `metapaas_s3` and adapt package names.
+Copy from `exordos_mail` or `exordos_s3` and adapt package names.
 
 **File:** `pyproject.toml`
 ```toml
 [project]
-name = "exordos_paas_foo"
+name = "exordos_foo"
 description = "Foo PaaS plugin for the Exordos MetaPaaS runtime"
 dynamic = ["version"]
 requires-python = ">=3.10"
@@ -553,10 +668,10 @@ dependencies = [
 ]
 
 [project.entry-points."exordos_metapaas_paas"]
-foo = "exordos_paas_foo.definition:FooDefinition"
+foo = "exordos_foo.definition:FooDefinition"
 
 [project.entry-points."gcl_sdk_universal_agent"]
-FooCapabilityDriver = "exordos_paas_foo.driver:FooCapabilityDriver"
+FooCapabilityDriver = "exordos_foo.driver:FooCapabilityDriver"
 
 [build-system]
 requires = ["setuptools>=75.3.3", "setuptools_scm>=8"]
@@ -574,7 +689,7 @@ ruff = ["ruff"]
 mypy = ["mypy"]
 
 [tool.setuptools.package-data]
-exordos_paas_foo = ["migrations/*.py"]
+exordos_foo = ["migrations/*.py"]
 ```
 
 **File:** `tox.ini`
@@ -586,7 +701,7 @@ isolated_build = True
 [testenv]
 package = wheel
 extras = test
-commands = pytest exordos_paas_foo/tests/unit {posargs}
+commands = pytest exordos_foo/tests/unit {posargs}
 
 [testenv:py{310,311,312,313,314}-functional]
 extras = test
@@ -596,19 +711,19 @@ setenv =
     METAPAAS_PASSWORD = {env:METAPAAS_PASSWORD:}
     EXORDOS_USERNAME = {env:EXORDOS_USERNAME:admin}
     EXORDOS_PASSWORD = {env:EXORDOS_PASSWORD:}
-commands = pytest exordos_paas_foo/tests/functional {posargs}
+commands = pytest exordos_foo/tests/functional {posargs}
 
 [testenv:ruff-check]
 extras = ruff
-commands = ruff check exordos_paas_foo
+commands = ruff check exordos_foo
 
 [testenv:ruff]
 extras = ruff
-commands = ruff format exordos_paas_foo
+commands = ruff format exordos_foo
 
 [testenv:mypy]
 extras = mypy
-commands = mypy exordos_paas_foo
+commands = mypy exordos_foo
 ```
 
 **File:** `Makefile`
@@ -630,7 +745,7 @@ wheel:
 	python -m build --wheel
 
 publish-wheel: wheel
-	cp dist/exordos_paas_foo-*.whl /srv/exordos-local-repo/simple/
+	cp dist/exordos_foo-*.whl /srv/exordos-local-repo/simple/
 
 lint:
 	tox -e ruff-check
@@ -695,7 +810,7 @@ jobs:
 
 **File:** `.github/workflows/func_tests.yaml`
 
-See `metapaas_mail/.github/workflows/func_tests.yaml` for the full working example. The pattern is:
+See `exordos_mail/.github/workflows/func_tests.yaml` for the full working example. The pattern is:
 1. Bootstrap exordos_core
 2. Clone `exordos_metapaas` (runtime dependency)
 3. Run `prepare_env.py` — builds artifacts, installs elements, waits for mail API
@@ -709,7 +824,7 @@ See `metapaas_mail/.github/workflows/func_tests.yaml` for the full working examp
 ### Build & Serve
 
 ```bash
-cd metapaas_<name>
+cd exordos_<name>
 
 # Build DP image + manifest
 make build
@@ -724,7 +839,7 @@ make install
 ### Bootstrap CI environment locally
 
 ```bash
-python exordos_paas_<name>/tests/functional/prepare_env.py \
+python exordos_<name>/tests/functional/prepare_env.py \
   --metapaas-dir ../exordos_metapaas \
   --project-dir . \
   --output-dir /tmp/<name>-build \
@@ -739,15 +854,17 @@ tox -e py312-functional
 
 ## Checklist for New PaaS
 
-- [ ] Repo structure: `exordos/images/`, `exordos/manifests/`, `exordos_paas_<name>/`, `etc/systemd/`
+- [ ] Repo structure: `exordos/{images,manifests}/`, `etc/{exordos_metapaas,systemd}/`, `exordos_<name>/controlplane/`, `exordos_<name>/dataplane/`, `exordos_<name>/migrations/`, `exordos_<name>/tests/`
 - [ ] DP image: `dp_install.sh` (build) + `dp_bootstrap.sh` (first boot); `exordos.yaml` references both via `profile` + `script`
 - [ ] `exordos.yaml`: **two** deps — plugin package (`/opt/exordos_metapaas`) + runtime (`/opt/exordos_metapaas_runtime`); two element entries (manifest-only + manifest+image)
-- [ ] `models.py`: `ModelWithUUID` + `ModelWithProject` + `orm.SQLStorableMixin`; Version model with `TargetResourceMixin`
-- [ ] `controllers.py`: `PolicyBasedController` + `BaseResourceControllerPaginated`; `__policy_service_name__` + `__policy_name__` match manifest permission names
+- [ ] `controlplane/dm/models.py`: `ModelWithUUID` + `ModelWithProject` + `orm.SQLStorableMixin`; Version model with `TargetResourceMixin`; child resources with `_touch_parent` + `_maybe_hash_password` if salted hashes
+- [ ] `controlplane/api/controllers.py`: `PolicyBasedController` + `BaseResourceControllerPaginated`; `__policy_service_name__` + `__policy_name__` match manifest permission names
 - [ ] `field_permissions`: hides secrets (`HIDDEN`), marks read-only fields (`RO`) like `status`, `ipsv4`
-- [ ] `definition.py`: `PaaSDefinition` subclass; `element_name` matches element registration name (e.g., `"foo-aas"`, **not** `"foo"`)
-- [ ] `routes.py`: route controller wiring
-- [ ] `driver.py`: `CapabilityDriver` subclass; registered via `gcl_sdk_universal_agent` entrypoint
+- [ ] `controlplane/api/routes.py`: route controller wiring
+- [ ] `controlplane/infra/services/builder.py`: `CoreInfraBuilder` subclass (nodes, keys, config regen)
+- [ ] `controlplane/paas/services/builder.py`: `PaaSBuilder` subclass (payload assembly, DP facts sync)
+- [ ] `definition.py` (package root): `PaaSDefinition` subclass; `element_name` matches element registration name (e.g., `"foo-aas"`, **not** `"foo"`)
+- [ ] `dataplane/driver.py`: `CapabilityDriver` subclass; registered via `gcl_sdk_universal_agent` entrypoint; `dump_to_dp()` uses `_write_file_atomic` (reload only on change); `restore_from_dp()` reads real disk state (not empty defaults)
 - [ ] `migrations/`: DB migration files for all tables
 - [ ] `pyproject.toml`: two entrypoints (`exordos_metapaas_paas` + `gcl_sdk_universal_agent`); `migrations/*.py` in package-data
 - [ ] Manifest `<name>-aas.yaml.j2`: `$metapaas.types` (with correct `element_name`) + `$core.iam.permissions` + `$core.iam.permissionbinding` + `$<element_name>.types.<slug>.versions`
@@ -784,7 +901,7 @@ tox -e py312-functional
 
 9. **`element_name` vs `slug` in namespace**: The version resource namespace is `$<element_name>.types.<slug>.versions`, where `element_name` comes from `PaaSDefinition.element_name` (and must match the element's registered name). If `slug = "foo"` but `element_name = "foo-aas"`, the namespace is `$foo-aas.types.foo.versions` — **not** `$foo.types.foo.versions`. A mismatch causes "Namespace was not found" when core tries to resolve the version reference.
 
-10. **pip simple index missing package subdir**: When PluginReconciler runs `pip install exordos_paas_<name>` from your local index, it expects `<index_url>/<package-name>/index.html` to exist. If only the `.whl` file is present without the subdir+index.html, the install will 404. Create the subdir and link the wheel:
+10. **pip simple index missing package subdir**: When PluginReconciler runs `pip install exordos_<name>` from your local index, it expects `<index_url>/<package-name>/index.html` to exist. If only the `.whl` file is present without the subdir+index.html, the install will 404. Create the subdir and link the wheel:
     ```bash
     mkdir -p /srv/exordos-local-repo/simple/exordos-paas-<name>
     # ... generate index.html with link to the .whl
@@ -792,9 +909,33 @@ tox -e py312-functional
 
 11. **Test isolation in functional tests**: Create a fresh instance per test session, not per test class. Use session-scoped fixtures. Clean up instances in fixture teardown.
 
+12. **`restore_from_dp()` returning empty defaults causes infinite service restarts**: The DP
+    agent calls `restore_from_dp()` to read actual state, then compares with target state. If
+    `restore_from_dp()` sets fields to empty defaults (e.g. `self.accounts = {}`) even when
+    real data exists on disk, actual≠target every cycle → `dump_to_dp()` fires every cycle →
+    service reloads/restarts in a loop. Every field must be read from disk. See `MailInstance.restore_from_dp()` for the reference pattern (`_read_exim4_passwd()`).
+
+13. **Unconditional `systemctl reload` in `dump_to_dp()` causes restart loops**: Calling reload
+    unconditionally makes the agent restart the service on every reconciliation cycle (~3s). Use
+    `_write_file_atomic` (read existing file, compare, skip write if identical) and only call
+    reload/restart when the function returns `True` (content actually changed).
+
+14. **Salted hash fields generate new salt on every core-agent cycle**: The core-agent stores the
+    original plaintext from the create request in the orch target and re-applies it on every cycle.
+    `sha512_crypt.hash(plaintext)` produces a different hash each time (random salt) → DB changes
+    every cycle → DP diff → reload loop. Use `property.old_value` to verify the plaintext against
+    the stored crypt hash before re-hashing. See `MailAccount._maybe_hash_password()` for the
+    reference pattern.
+
+15. **Version upgrade: set `version` field, not just `status`**: `PaaSType.update()` automatically
+    resets `status=NEW` when `version` or `package` changes. The PluginReconciler then compares
+    the installed dist version against `plugin.version` and reinstalls only if they differ. Setting
+    `status=NEW` directly without changing `version` will result in the reconciler marking the
+    plugin ACTIVE immediately (no reinstall) if the dist version already matches.
+
 ---
 
 ## Reference Implementations
 
-- **metapaas_s3** — production-grade, fully featured (instances, buckets, users, policies, access keys)
-- **metapaas_mail** — simpler reference (instances + accounts); good starting point for new plugins
+- **exordos_mail** (`exordos_mail`) — **primary reference**: instances + accounts, DKIM, Exim4, functional tests. First complete end-to-end example of the plugin contract. Study `driver.py` for `_write_file_atomic`/`restore_from_dp`, `models.py` for `_maybe_hash_password`/`_touch_parent`.
+- **exordos_s3** — production-grade, fully featured (instances, buckets, users, policies, access keys); pending migration to the plugin contract (phase 5).

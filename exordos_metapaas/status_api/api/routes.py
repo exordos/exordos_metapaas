@@ -26,3 +26,4 @@ class ApiEndpointRoute(routes.Route):
 
     agents = routes.route(status_routes.UniversalAgentsRoute)
     kind = routes.route(status_routes.KindRoute)
+    node_verifiers = routes.route(status_routes.NodeVerifiersRoute)

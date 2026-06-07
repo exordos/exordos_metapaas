@@ -21,6 +21,7 @@ mounts each one's declarative API under ``/v1/types/<slug>/``.
 This mirrors the proven gcl_sdk universal-agent driver mechanism
 (``gcl_sdk_universal_agent`` entry points loaded by name from config).
 """
+
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
@@ -109,6 +110,7 @@ class PaaSDefinition:
         (e.g. shared versions) scope by another column.
         """
         return {}
+
 
 def discover_paas() -> dict[str, PaaSDefinition]:
     """Discover all installed PaaS definitions, keyed by slug."""

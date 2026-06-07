@@ -24,6 +24,7 @@ This is the metapaas-side counterpart that makes a PaaS truly live in its own
 package/repository: only this reconciler is baked into the metapaas image, the
 PaaS code arrives at runtime from pip.
 """
+
 from __future__ import annotations
 
 import json
@@ -51,11 +52,20 @@ _RESTART_SERVICES = (
 
 _USER_API_SERVICE = "exordos-metapaas-user-api"
 
-_DISCOVER_SNIPPET = (
-    "import json;"
-    "from exordos_metapaas.registry import discover_paas;"
-    "print(json.dumps(sorted(discover_paas())))"
-)
+_DISCOVER_SNIPPET = """\
+import json
+import importlib.metadata as im
+from exordos_metapaas.registry import discover_paas
+discovered = discover_paas()
+slug_ver = {}
+for ep in im.entry_points(group='exordos_metapaas_paas'):
+    obj = ep.load()
+    inst = obj() if isinstance(obj, type) else obj
+    slug = getattr(inst, 'slug', '')
+    if slug and slug in discovered:
+        slug_ver[slug] = ep.dist.version if ep.dist else ''
+print(json.dumps(slug_ver))
+"""
 
 
 class PluginReconciler(looper_basic.BasicService):
@@ -64,20 +74,39 @@ class PluginReconciler(looper_basic.BasicService):
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
-    def _installed_slugs() -> tp.Set[str]:
-        """Discover installed PaaS slugs in a fresh interpreter."""
+    def _installed_slugs() -> tp.Dict[str, str]:
+        """Return {slug: dist_version} for all installed PaaS plugins.
+
+        Runs in a fresh interpreter so entry points registered by a package
+        installed earlier in this same process are visible.
+        """
         try:
             out = subprocess.check_output([sys.executable, "-c", _DISCOVER_SNIPPET])
-            return set(json.loads(out.decode()))
+            return json.loads(out.decode())
         except (subprocess.CalledProcessError, ValueError):
             LOG.exception("Failed to discover installed PaaS plugins")
-            return set()
+            return {}
 
     @staticmethod
     def _spec(plugin) -> str:
         if plugin.version and not _looks_like_url(plugin.package):
             return f"{plugin.package}=={plugin.version}"
         return plugin.package
+
+    @staticmethod
+    def _should_reinstall(plugin, installed_version: str) -> bool:
+        """Return True if the installed plugin does not match the desired spec.
+
+        For URL/whl/tar.gz packages the dist version cannot be compared against
+        a URL, so we always reinstall (triggered only when ``package`` changed
+        and ``update()`` reset the status to NEW).  For named packages with a
+        version pin we compare the dist version directly.
+        """
+        if _looks_like_url(plugin.package):
+            return True
+        if plugin.version:
+            return installed_version != plugin.version
+        return False
 
     def _install(self, plugin) -> bool:
         cmd = [
@@ -125,28 +154,40 @@ class PluginReconciler(looper_basic.BasicService):
 
         installed = self._installed_slugs()
 
-        # PaaS types that became discoverable (installed + restarted): mark ACTIVE.
         to_install = []
+        newly_activated = []
         for plugin in pending:
-            # PaaSType.name is the slug (e.g. "s3"); that's what discover_paas() keys on.
             if plugin.name in installed:
-                plugin.status = STATUS_ACTIVE
-                plugin.save()
-                LOG.info("Plugin %s is active", plugin.name)
+                if self._should_reinstall(plugin, installed[plugin.name]):
+                    LOG.info(
+                        "Plugin %s needs upgrade: installed=%s, desired=%s",
+                        plugin.name,
+                        installed[plugin.name],
+                        plugin.version or plugin.package,
+                    )
+                    to_install.append(plugin)
+                else:
+                    plugin.status = STATUS_ACTIVE
+                    plugin.save()
+                    newly_activated.append(plugin.name)
+                    LOG.info("Plugin %s is active", plugin.name)
             else:
                 to_install.append(plugin)
 
-        if not to_install:
+        if not to_install and not newly_activated:
             return
 
         installed_any = False
         for plugin in to_install:
             if self._install(plugin):
+                # Mark ACTIVE immediately so URL-based packages don't reinstall
+                # on the next gservice startup before routes/services reload.
+                plugin.status = STATUS_ACTIVE
+                plugin.save()
                 installed_any = True
+                LOG.info("Plugin %s installed and marked active", plugin.name)
 
-        # Activation requires a restart so the long-running services pick up the
-        # new routes/builders/models. The next iteration marks them ACTIVE.
-        if installed_any:
+        if installed_any or newly_activated:
             self._signal_user_api()
             self._restart_detached()
 

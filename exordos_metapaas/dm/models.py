@@ -21,6 +21,7 @@ clients. The db-back core-agent (kind ``em_metapaas_types``) reconciles these
 into the ``metapaas_paas_types`` table, and the PluginReconciler pip-installs
 any package not yet present (see ``exordos_metapaas.services.plugin_reconciler``).
 """
+
 from gcl_sdk.agents.universal.dm import models as ua_models  # patches SQLStorableMixin
 from restalchemy.dm import models
 from restalchemy.dm import properties
@@ -62,3 +63,11 @@ class PaaSType(
         types.String(max_length=32),
         default="NEW",
     )
+
+    def update(self, session=None, force=False):
+        if (
+            self.properties["version"].is_dirty()
+            or self.properties["package"].is_dirty()
+        ):
+            self.status = "NEW"
+        super().update(session=session, force=force)

@@ -37,8 +37,11 @@ LOG = logging.getLogger(__name__)
 # in sync: load → setattr; invalidate+reload → delattr stale, setattr fresh.
 # ---------------------------------------------------------------------------
 
-_plugin_cache: dict | None = None   # {slug: route_class}
+_plugin_cache: dict | None = None  # {slug: route_class}
 _live_slugs: frozenset = frozenset()  # slugs currently setattr'd on TypeRoute
+_loading: bool = False  # re-entrancy guard: importlib.metadata iterates sys.meta_path
+# during entry_points(), which can trigger is_route() before
+# _load_plugin_cache() returns; return {} instead of recursing.
 
 
 def _load_plugin_cache() -> dict:
@@ -67,13 +70,28 @@ def _load_plugin_cache() -> dict:
             pass
 
     _live_slugs = frozenset(new_slugs)
+    # Lazy import: app.py imports this module at top level, so importing it
+    # here would be circular at load time — but by call time it's fully loaded.
+    from exordos_metapaas.user_api.api.app import UserApiApp
+    from restalchemy.api import resources as ra_resources
+    from restalchemy.api import routes as ra_routes
+
+    ra_resources.ResourceMap.set_resource_map(
+        ra_routes.Route.build_resource_map(UserApiApp)
+    )
     return result
 
 
 def _get_plugin_cache() -> dict:
-    global _plugin_cache
+    global _plugin_cache, _loading
     if _plugin_cache is None:
-        _plugin_cache = _load_plugin_cache()
+        if _loading:
+            return {}
+        _loading = True
+        try:
+            _plugin_cache = _load_plugin_cache()
+        finally:
+            _loading = False
     return _plugin_cache
 
 

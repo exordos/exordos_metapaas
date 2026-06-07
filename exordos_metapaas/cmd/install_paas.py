@@ -30,6 +30,7 @@ It is the imperative core the runtime reconciler invokes when a desired-plugin
 resource appears (delivered via the element manager / a Config), so installs can
 be driven declaratively too.
 """
+
 from __future__ import annotations
 
 import argparse

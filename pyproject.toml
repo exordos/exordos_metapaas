@@ -21,7 +21,7 @@ dependencies = [
     "restalchemy>=15.0.0,<16.0.0",  # Apache-2.0
     "gcl_iam>=1.0.3,<2.0.0",  # Apache-2.0
     "gcl_looper>=1.2.3,<2.0.0",  # Apache-2.0
-    "gcl_sdk>=3.0.0,<4.0.0",  # Apache-2.0
+    "gcl_sdk>=3.0.5,<4.0.0",  # Apache-2.0
     "bjoern>=3.2.2",  # BSD License (BSD-3-Clause)
     "PyYAML>=6.0.0,<7.0.0",  # MIT
     "requests>=2.28.0,<3.0.0",  # Apache-2.0
@@ -70,8 +70,8 @@ exordos-metapaas-install-paas = "exordos_metapaas.cmd.install_paas:main"
 
 # PaaS plugins register a PaaSDefinition here. The bundled demo plugin proves
 # the entry-point -> routes -> migrations wiring end-to-end.
-[project.entry-points."exordos_metapaas_paas"]
-demo = "metapaas_demo.definition:DemoDefinition"
+# [project.entry-points."exordos_metapaas_paas"]
+# demo = "metapaas_demo.definition:DemoDefinition"
 
 [tool.uv]
 package = true
