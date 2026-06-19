@@ -1,252 +1,252 @@
-# Exordos MetaPaaS — Design
+# Exordos MetaPaaS — High Level Design
 
-> Phases 1–3 complete. First PaaS built on this contract: **mail** (exordos_mail).
-> First migration target: **s3**.
+> **PaaSes on this contract: `exordos_mail` (mail) and `exordos_s3` (s3).**
 
-## Goal
+## Problem
 
-Currently every PaaS (`exordos_s3`, `exordos_db`, future `exordos_mail`) is a separate
-repository that carries **its own** control-plane deployment: a dedicated CP-VM, a dedicated
-pg-cluster (via dbaas), dedicated `user_api`/`orch_api`/`status_api`/`gservice`.
-~70% of each PaaS codebase is copy-pasted boilerplate.
+Every PaaS (`exordos_s3`, `exordos_db`, `exordos_mail`) today is a separate repository
+with its own control-plane node, its own pg-cluster (via dbaas), and its own copies of
+`user_api`/`orch_api`/`status_api`/`gservice`. ~70 % of each PaaS codebase is duplicated
+boilerplate.
 
-MetaPaaS is a **single CP runtime** that multi-tenantly hosts many PaaS types. A new PaaS =
-an installable plugin (`PaaSDefinition`), not a new CP node. Creating an instance brings up
-**dataplane nodes only**. This eliminates both the boilerplate and N extra CP-VMs with their DBs.
+## Target Architecture
 
-## Locked decisions
+**Single CP runtime** that hosts any number of PaaS types as installable Python plugins. A
+new PaaS = a plugin package, not a new CP node. Creating an instance still brings up
+**dataplane nodes only** — the CP itself never grows.
 
-| Decision point | Choice |
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    exordos-metapaas (CP node)                       │
+│                                                                     │
+│  mp-user-api  ──  /v1/types/<slug>/  (per-plugin, dynamic mount)   │
+│  mp-orch-api  ──  gcl_sdk universal orch API (generic)             │
+│  mp-status-api ─  gcl_sdk universal status API (generic)           │
+│  mp-gservice  ──  InfraScheduler + UAgent + PluginReconciler        │
+│                   + per-plugin InfraBuilder + PaaSBuilder           │
+│  mp-core-agent ─  db-back agent; [models]/[filters] generated       │
+│                   from plugin registry (render_config)              │
+│                                                                     │
+│  Shared Postgres  (persistent disk; slug-prefixed tables per PaaS)  │
+│  Plugin packages  (pip-installed at runtime, no rebuild)            │
+└─────────────────────────────────────────────────────────────────────┘
+         │                              │
+         ▼ reconcile NodeSet/Config     ▼ dp agent
+    Core compute                  DP nodes (per-PaaS image)
+```
+
+## Key Decisions
+
+| Decision | Choice |
 |---|---|
-| Architecture | **A — single runtime + plugins** (not extending gcl_sdk as a library) |
-| CP entity storage | **Real per-paas tables in one DB**, table prefix = `slug`, migrations supplied by the plugin |
-| Plugin versioning | **Independent** — each PaaS is updated/migrated separately (UUID migrations in the shared restalchemy `ra_migrations`) |
-| Installing a new PaaS | **Without rebuilding metapaas** — via the core element-manager + an agent inside metapaas (or direct admin-API). Plugin = a runtime-installable artifact, loaded via entry-point (same as drivers already do) |
-| Second copy of a PaaS | **YAGNI** — only the invariant `(deployment_id, slug)`; second copy = redeploy the element or use a second slug |
+| Architecture | **A — single runtime + plugins** (not gcl_sdk library extension) |
+| CP entity storage | **Real per-slug tables** in one embedded Postgres; migrations supplied by each plugin |
+| Plugin versioning | **Independent** — each PaaS upgraded separately; migration tracking via shared `ra_migrations` (UUID ids) |
+| Installing a new PaaS | **Without rebuilding metapaas** — pip-install at runtime; plugin entrypoint becomes discoverable immediately |
+| Second copy of a PaaS | **YAGNI** — invariant `(deployment_id, slug)`; second copy = second element install or second slug |
+| Contract versioning | **Not introduced** — compatibility ensured by gcl_sdk + plugin package version pins; added only when a real incompatibility arises |
 
-## What gcl_sdk already provides (do not duplicate) — verified against cloned code
+## Plugin Contract — `PaaSDefinition`
 
-- `gcl_sdk.agents.universal` — universal agent service, scheduler service, **universal builder
-  engine** (`services/builder.py`, 1746 lines — shared engine for Paas/Infra builders),
-  orch client (`DatabaseOrchClient`), core driver (`RestCoreCapabilityDriver`), dm models
-  (`TargetResourceKindAwareMixin`, `InstanceWithDerivativesMixin`, `Resource`,
-  `TargetResource`, `NodeEncryptionKey`).
-- **Generic agent-facing API is already in gcl_sdk** (per-paas does NOT write this): `agents/universal/orch_api`
-  (`/v1/agents/<uuid>/actions/get_payload`), `agents/universal/status_api`
-  (`/v1/kind/<name>/resources/`, `/v1/agents/`, `/v1/nodes/`), `agents/universal/api`
-  (`BaseSdkResourceController`, middlewares, crypto). metapaas simply mounts them.
-- **Ready-made plugin mechanism**: entry-point group `EP_UNIVERSAL_AGENT="gcl_sdk_universal_agent"`
-  + `common/utils.load_from_entry_point(group, name)` + config-driven driver list
-  (`caps_drivers`/`facts_drivers`, each reads its own ini section). metapaas mirrors this
-  pattern for the CP side (its own EP group for `PaaSDefinition`).
-- **Cross-project migrations**: `common/utils.MigrationEngine` applies migrations from an external
-  package file. Tracking — shared restalchemy table `ra_migrations` (id = UUID).
-- `gcl_sdk.paas.services.builder.PaaSBuilder` / `PaaSCollection` — **abstract** bases
-  (create/actualize/schedule are stubs; all generic hook machinery is already here).
-- `gcl_sdk.infra.services.builder.CoreInfraBuilder` / `InfraCollection` — also **abstract**
-  base (149 lines). NOTE: heavy logic (node keys, shrink/grow, sizing nodeset,
-  config regeneration) is currently **copied in each PaaS** (s3 234 lines, db has its own copy),
-  it is NOT in gcl_sdk → metapaas generic `InfraBuilder` genuinely deduplicates it.
-- `gcl_sdk.infra.dm.models` — IaaS primitives: `NodeSet`, `Node`, `Config`,
-  `SetDisksSpec`, `NodeTarget`, `TextBodyConfig`, `OnChangeShell`.
-- `gcl_sdk.paas.dm.services` — `Service` / `ServiceDPTarget` / `CmdShell`: already model
-  "run this service on a DP node", reuse for launching DP instead of reinventing.
-
-## Current PaaS layers and their fate
-
-| Layer | Files (s3) | Fate |
-|---|---|---|
-| user_api boilerplate | `user_api/api/{app,routes,versions}.py`, `cmd/user_api.py` | → metapaas runtime |
-| **CP entities** | `user_api/dm/models.py`, `api/controllers.py` | → **plugin** (almost no changes) |
-| orch_api | all of `orch_api/`, `cmd/orch_api.py` | **already generic in gcl_sdk** — metapaas only mounts + cmd |
-| status_api | all of `status_api/` | **already generic in gcl_sdk** — metapaas only mounts + cmd |
-| infra | `infra/dm/models.py`, `infra/services/builder.py` | heavy logic deduplicated in runtime (not in gcl_sdk); **disk layout + config-template → plugin** |
-| paas | `paas/dm/models.py`, `paas/services/builder.py` | scheduling → runtime; **payload assembly → plugin** |
-| **agent driver** | `agent/universal/drivers/s3.py` | → **plugin** (ships in the DP image via gcl_sdk) |
-| gservice | `services/gservice.py`, `cmd/gservice.py` | → metapaas runtime |
-| common/cmd/systemd/migrations | | runtime + auto-IAM from registry |
-
-## `PaaSDefinition` plugin contract
-
-Registered via an entry-point group (analogous to `gcl_sdk_universal_agent`):
+A plugin is a Python package that registers a `PaaSDefinition` subclass via the
+`exordos_metapaas_paas` entry-point group. The runtime discovers all installed definitions
+at startup and wires them in automatically.
 
 ```python
-class PaaSDefinition:                      # loaded via entry-point (like gcl_sdk drivers)
-    slug: str                    # "s3"  — table prefix, path /v1/types/<slug>/
-    entity_models: list          # restalchemy SQL models for CP entities + validation
-    routes: Route                # route tree under /v1/types/<slug>/
-    migrations_path: str         # migrations directory (CREATE TABLE, tablename starts with f"{slug}_")
-    iam_actions: list            # actions → metapaas auto-generates permissions/bindings
+class PaaSDefinition:
+    slug: str            # "mail" — table prefix, /v1/types/<slug>/ mount point
+    element_name: str    # "mailaas" — element name for EM kind construction
 
-    def infra_spec(instance) -> InfraSpec:    # nodeset (cpu/ram/disk/replicas/image) + config-template(s)
-        ...
-    def node_payload(instance) -> dict:       # payload for the DP node (from paas builder _get_*)
-        ...
-    dp_driver: str               # ref to the DP driver (entry-point EP_UNIVERSAL_AGENT, in DP image)
-    dp_image_kind: str           # DP node image type
+    def get_type_route(self) -> Route:
+        """restalchemy Route for /v1/types/<slug>/ (models + controllers)."""
+
+    def get_migrations_path(self) -> str | None:
+        """Filesystem path to this plugin's migrations dir."""
+
+    def get_builders(
+        self,
+        core_username, core_password, core_api_base_url, project_id,
+    ) -> list:
+        """Instantiate and return CP builder services (InfraBuilder, PaaSBuilder).
+        Runtime adds InfraScheduler, UAgent, PluginReconciler unconditionally.
+        """
+
+    def get_agent_models(self) -> dict[str, str]:
+        """core-agent [models] map: {subpath: "module:Model"}.
+        subpath is relative to types.<slug>, e.g. "instances" or "instances.accounts".
+        """
+
+    def get_agent_filters(self) -> dict[str, str]:
+        """core-agent [filters] map: {subpath: field_name}."""
 ```
 
-> `contract_version`/`schema_version` are deliberately NOT introduced now (premature). Rough
-> compatibility is already ensured by pinning gcl_sdk version and the plugin package version.
-> We will add them when a real incompatibility arises.
+EM kind formula: `em_<element_name>_types_<slug>_<subpath>` (dots → underscores).
+Matches the kind Core emits for `$<element_name>.types.<slug>.<subpath>`.
 
-The PaaS author writes **only**: models + validation, `infra_spec`, `node_payload`,
-DP driver (mostly already in gcl_sdk), `dp_install.sh` + `dp_bootstrap.sh` scripts for the DP image, one migration.
+The plugin author writes: models + validation, controllers, `infra_spec` logic (inside
+`InfraBuilder.get_infra()`), `node_payload` logic (inside `PaaSBuilder._get_*` methods),
+DP driver (in the DP image, via gcl_sdk entry-points), `dp_install.sh`/`dp_bootstrap.sh`,
+one migration, IAM section in the PaaS element manifest.
 
-### DP driver idempotency invariant
+## What gcl_sdk Provides (do not duplicate)
 
-The DP agent calls the driver on every reconciliation cycle (~every few seconds). The driver
-**must** be idempotent:
+- `gcl_sdk.agents.universal` — universal agent, scheduler, builder engine (1746 lines),
+  orch client (`DatabaseOrchClient`), core driver (`RestCoreCapabilityDriver`), dm models
+  (`TargetResource`, `NodeEncryptionKey`, etc.).
+- Generic orch API (`/v1/agents/<uuid>/actions/get_payload`) and status API
+  (`/v1/kind/<name>/resources/`, `/v1/agents/`, `/v1/nodes/`) — metapaas mounts them as-is.
+- `MigrationEngine` for cross-project migrations; shared `ra_migrations` tracking table.
+- `PaaSBuilder` / `PaaSCollection`, `CoreInfraBuilder` / `InfraCollection` — abstract bases;
+  heavy infra logic (node keys, shrink/grow, sizing, config regen) is **not** in gcl_sdk,
+  currently per-plugin.
+- IaaS primitives: `NodeSet`, `Node`, `Config`, `SetDisksSpec`, `NodeTarget`, `OnChangeShell`.
+- `Service` / `ServiceDPTarget` / `CmdShell` — "run this on a DP node" model.
 
-- `dump_to_dp()` — compare new config with existing file before writing; only reload the
-  service if content actually changed (`_write_file_atomic` pattern). **Never call
-  `systemctl reload/restart` unconditionally.**
-- `restore_from_dp()` — read the **actual on-disk state** into `self`. Returning empty
-  defaults (e.g. `self.accounts = {}`) when real data exists on disk makes actual≠target
-  every cycle → `dump_to_dp()` fires every cycle → service restarts in a loop.
-- CP models with salted hashes (bcrypt, sha512crypt): if core-agent stores plaintext in the
-  orch target and re-applies it every cycle, a naive `hash(plaintext)` generates a new salt
-  each time → DB hash changes → DP sees diff → restart loop. Fix: use
-  `property.old_value` to verify plaintext against the stored hash before re-hashing.
+## Runtime Components
 
-The plugin is packaged as a **versioned Python package**. In the PaaSDefinition resource it is
-specified in one of two ways (both installed via `pip` with no extra logic):
-- **pip name + version** from the configured pip index — `package: "exordos-paas-s3"`, `version: "1.2.3"`;
-- **full path/URL to the artifact** `.whl` / `.tar.gz` (the same nginx repo as images, or any URL) —
-  `package_url: "https://repo.exordos.com/.../exordos_paas_s3-1.2.3-py3-none-any.whl"`.
+### user_api (`mp-user-api`)
 
-The DP driver ships separately — inside the DP image.
+Hosts `/v1/types/` with **dynamic route mounting**. On first request, `TypeRoute` calls
+`discover_paas()` and `setattr`s each plugin's route onto itself; stale slugs are
+`delattr`d. A `SIGUSR1` handler invalidates the cache so `install_paas` can trigger a
+live route reload without a process restart.
 
-## Generic bases in metapaas runtime
-
-- `PaaSInstance` — common fields `name/status/project_id/version(image)/cpu/ram/disk_size/nodes_number/ipsv4`.
-- `InstanceChildModel` — cascade `touch_parent → instance.update(force=True)` for DP resync.
-- `PaaSVersion` — image registry `name→image`, keyed by slug.
-- Generic `InfraBuilder` — node encryption keys, shrink/grow, sizing nodeset,
-  per-node config regeneration; takes disk layout + config content from `infra_spec`.
-- Generic `PaaSBuilder` — scheduling (1 entity → 1 agent by uuid); payload from `node_payload`.
-- Plugin loader + dynamic route mounting under `/v1/types/<slug>/` +
-  aggregating migration-runner + auto-IAM.
-
-## Lifecycle: installing and upgrading PaaSes
-
-Principle: **installing/updating a PaaS never rebuilds the metapaas image.** Rebuilding the
-CP image is only needed to update the metapaas core itself (rare). This follows the existing
-exordos pattern — PaaSes are already installed as core elements.
-
-### Artifacts per PaaS
-1. **PaaS package** — Python package implementing `PaaSDefinition` (models/validation/
-   `infra_spec`/`node_payload`/controllers/migrations/IAM). Specified as **pip name+version** from
-   the index **or** a direct **URL/path to `.whl`/`.tar.gz`**. Installed via `pip`.
-2. **DP image** — separate artifact, contains the DP driver (via universal agent).
-3. **PaaS element** — core manifest that, instead of a CP-VM, declares a `PaaSDefinition` resource:
-   `slug`, `package`+`version` (pip) or `package_url` (whl/tar.gz),
-   DP image/version ref, `contract_version`.
-
-### Install flow (declarative, primary)
 ```
-exordos em elements install paas-s3.yaml
-  → core saves PaaSDefinition resource in element-manager
-  → metapaas agent (universal-agent capability driver, kind=paas_definition)
-       reconciles resource: pip install package (by index name or by url to whl/tar.gz)
-       into plugins environment on sys.path (its entry-point becomes visible in new processes)
-       → runs unapplied plugin migrations (MigrationEngine, tracked in shared ra_migrations)
-       → auto-generates IAM from iam_actions
-       → triggers rolling-restart of API workers (mp-user-api/orch/status),
-         which re-enumerate installed plugins on startup
-  → /v1/types/s3/ is live, no s3 CP nodes
+/v1/
+└── types/                        ← PaaSTypeController (CRUD for PaaSType)
+    └── <slug>/                   ← plugin's Route (mounted dynamically)
+        └── instances/...         ← plugin-specific hierarchy
 ```
-This is the "agent inside metapaas that pulls info from element-manager." The direct
-metapaas-API admin endpoint is a thin wrapper over the same installer (for dev).
 
-### Upgrade
-- **Dataplane**: new `PaaSVersion` (new image) → infra-builder rolls nodes rolling/canary.
-  CP entities are not touched.
-- **Plugin CP code**: new package version in PaaSDefinition resource → agent `pip install` →
-  unapplied plugin migrations → rolling-restart of workers. Independent of other PaaSes.
-- **metapaas core**: rebuild/roll out CP image (rare).
+### gservice (`mp-gservice`)
 
-### Why this is safe
-- Tables are namespaced by `slug`; migrations use UUID ids in the shared `ra_migrations`, each
-  plugin's `_depends` chains are self-contained → updating one PaaS does not touch others.
-- Dataplane is autonomous → during CP rolling-restart, instances keep serving traffic
-  (≤ sub-second blip on management-API only).
+At startup: discovers plugins, calls `definition.get_builders()`, passes results to
+`LaunchpadService` alongside the always-present `InfraScheduler`, `UAgent`, and
+`PluginReconciler`.
 
-### Registry
-The installer maintains a lock of installed PaaSes (slug → package version, applied migrations,
-DP image ref), exposed via `status_api`.
+```python
+services = [InfraScheduler(), UAgent(**core_kwargs), PluginReconciler()]
+for definition in discover_paas().values():
+    services.extend(definition.get_builders(**core_kwargs))
+```
 
-### Trust
-Packages arrive via the authenticated core element-manager — the same trust domain as images
-that are today fetched and booted under root. Package execution is acceptable in this model.
-Hard invariant: plugin `tablename` must start with `f"{slug}_"`.
+### PluginReconciler
 
-## Deploying metapaas
+Watches `metapaas_paas_types` for rows with `status != ACTIVE`. For each:
+1. Checks if the slug is already pip-installed (via a fresh subprocess).
+2. If missing or version mismatch: runs `exordos-metapaas-install-paas` (no-restart mode).
+3. Marks `status = ACTIVE`.
+4. After all installs: sends SIGUSR1 to user_api workers + detached restart of gservice and
+   core-agent via a transient systemd unit (so gservice restart doesn't kill itself).
 
-One element `exordos_metapaas`: its own CP node + one pg cluster. Services:
-`mp-user-api`, `mp-orch-api`, `mp-status-api`, `mp-gservice`, `mp-bootstrap`.
-CP image is built once. DP image — per-paas, standardized via universal agent.
+`PaaSType.update()` resets `status = NEW` when `version` or `package` changes — triggering
+the next reconciliation cycle.
 
-**DB persistence (like dbaas CP):** metapaas stores CP state in the DB, so the DB
-**must** reside on a second persistent disk, not on root (root is recreated on image update).
-The CP node declares a second disk `label: data`; bootstrap via
-`lib_bootstrap.sh` (`find_persistent_disk` / `prepare_persistent_disk` /
-`migrate_to_persistent_stop_start /var/lib/postgresql postgresql@18-main`) moves
-postgres + `/etc/exordos_metapaas` + `/var/lib/exordos/exordos_metapaas` to the data disk.
-For the spike DB — embedded postgres on the CP node (no dbaas); password is generated locally
-(`generate_secure_password`) and persisted in config on the data disk.
+### render_config (`exordos-metapaas-render-config`)
 
-## Phased plan
+Generates two config files from the installed plugin registry:
+- `exordos_metapaas.conf` — DB, IAM, API bind addresses, core credentials.
+- `core_agent.conf` — `[models]` and `[filters]` for every resource kind across all plugins.
 
-1. ✅ **`exordos_metapaas` skeleton** — runtime: orch_api/status_api/agent-API from gcl_sdk,
-   user_api host, gservice, common, systemd. Own manifest: CP node + pg.
-2. ✅ **`PaaSDefinition` contract** — loader via entry-point, dynamic route mounting,
-   migration-runner (`MigrationEngine`), auto-IAM.
-3. ✅ **PaaS installer (PluginReconciler)** — watches `metapaas_paas_types`, pip-installs
-   missing/upgraded packages, applies migrations, restarts workers. Version-change detection:
-   `PaaSType.update()` resets `status=NEW` when `version`/`package` changes.
-4. **Generic bases** — `PaaSInstance`, `InstanceChildModel`, `PaaSVersion`, generic
-   `InfraBuilder`/`PaaSBuilder`. *(Partially done in exordos_mail; needs extraction into runtime.)*
-5. **`exordos_paas_s3` plugin** — migrate `user_api/dm+api`, `infra`, `paas`, driver,
-   migration; package as artifact + paas element. Delete boilerplate from s3 repo.
-6. **Contract validation** — existing s3 functional tests against metapaas.
-   **`exordos_mail` is the first complete "new PaaS = plugin" proof** (instances, accounts,
-   DKIM, Exim, functional tests).
+Built-in entry: `em_metapaas_types → PaaSType` (always subscribed, regardless of plugins).
+Per-plugin entries built from `get_agent_models()` / `get_agent_filters()`.
 
-## Risks
+Run at first boot and re-run by `install_paas` after each pip install. Idempotent: DB
+password and project id are recovered from an existing config when env vars are absent.
 
-- **Blast radius** — one CP deployment for all PaaSes → availability coupling.
-  Mitigation later: sharding / multiple metapaas instances.
-- **Trust in plugin migrations** in shared DB → strictly require `tablename` starts with `slug_`.
-- **Dynamic route/restalchemy model registration** — risk reduced: `setattr` mounting
-  and entry-point loading already exist in code (s3 `app.py`, gcl_sdk `cmd/universal_agent.py`).
-- **Runtime package installation** (`pip install` → migrations → rolling-restart) — spike in phase 3;
-  rolling-restart of workers instead of in-process module injection for simplicity/safety.
-- **Infra logic deduplication** — node keys/shrink/sizing currently have diverged copies in s3 and db;
-  when merging into generic `InfraBuilder`, reconcile divergences into one behavior.
+### install_paas (`exordos-metapaas-install-paas`)
 
-## s3 → plugin migration map (phase 5)
+Imperative install primitive (also called by PluginReconciler):
+```
+pip install <spec>  →  apply plugin migrations  →  render_config  →  SIGUSR1 + restart
+```
+Accepts pip spec (name==version, path, URL). `--no-restart` flag for staging multiple
+installs before a single restart.
 
-| Source (exordos_s3) | Destination |
+## Data Model
+
+```
+metapaas_paas_types               (runtime table — not a plugin table)
+  uuid, name (slug), element_name
+  package, version, index_url     ← pip install spec
+  status                          ← NEW | ACTIVE (reset to NEW on version change)
+
+<slug>_*                          (per-plugin tables; tablename must start with slug_)
+  plugin's own migrations, tracked in shared ra_migrations by UUID
+```
+
+## Deploying MetaPaaS
+
+One element (`exordos_metapaas`): single CP node + embedded Postgres on a persistent disk.
+
+**Manifest exports:**
+- `$metapaas.node` — the CP node reference for DNS/networking
+- `$metapaas.project` — stable project UUID `4d657461-0000-0000-0000-000000000002`;
+  PaaS consumer manifests import this instead of hardcoding.
+
+**Bootstrap sequence (`cp_bootstrap.sh`):**
+1. Wait for `/etc/exordos_init.txt` (Core config injection).
+2. Move Postgres + `/etc/exordos_metapaas` + `/var/lib/exordos/exordos_metapaas` to
+   the persistent data disk (`find_persistent_disk` / `migrate_to_persistent_*`).
+3. Create embedded DB user/db (first boot only).
+4. `render_config` → `exordos_metapaas.conf` + `core_agent.conf`.
+5. Apply gcl_sdk migrations, then metapaas own migrations, then per-plugin migrations.
+6. Seed CP node's RSA key into local DB (`ua_node_encryption_keys`).
+7. `systemctl enable --now` all five services.
+
+**Upgrade:**
+- **Dataplane**: new PaaS image → InfraBuilder rolls DP nodes rolling/canary. CP untouched.
+- **Plugin CP code**: new package version in `PaaSType` resource → PluginReconciler pip-installs →
+  applies unapplied migrations → rolling reload. Independent of other plugins.
+- **MetaPaaS core**: rebuild/roll CP image (rare; only for changes to the runtime itself).
+
+**Why this is safe:**
+- Tables namespaced by slug; migrations UUID-tracked independently per plugin.
+- DP is autonomous — during CP rolling-restart, instances keep serving traffic.
+- Packages arrive via the authenticated Core element-manager (same trust domain as images).
+  Hard invariant: `tablename` must start with `f"{slug}_"`.
+
+## DP Driver Idempotency (Invariant for All PaaS Plugins)
+
+The DP agent calls the driver on every reconciliation cycle (~every few seconds):
+
+- `dump_to_dp()` — compare before writing; call `systemctl reload` only on content change.
+  Never unconditionally.
+- `restore_from_dp()` — read **actual on-disk state**. Returning empty defaults when data
+  exists → diff every cycle → restart loop.
+- Salted hashes (bcrypt, sha512crypt) — use `property.old_value` to verify plaintext
+  against the stored hash before re-hashing; a new salt each cycle causes a restart loop.
+
+## Plugin Packaging
+
+A plugin is packaged as a versioned Python distribution and specified in `PaaSType` as:
+- **pip name + version**: `package = "exordos-paas-mail"`, `version = "1.2.3"` — installed
+  from the configured index.
+- **URL/path**: `package = "https://repo.../exordos_paas_mail-1.2.3-py3-none-any.whl"` —
+  any `.whl` or `.tar.gz` pip understands.
+
+The DP driver ships separately inside the DP image (via gcl_sdk universal-agent entry-points).
+
+## What Is Not Yet Implemented
+
+| Gap | Impact |
 |---|---|
-| `user_api/dm/models.py` (S3Instance/Bucket/User/Policy/AccessKey/Version) | plugin: entity_models (Instance/Child inherit generic bases) |
-| `user_api/api/controllers.py` + `routes.py` | plugin: routes |
-| `migrations/0000-init-*.py` | plugin: migrations |
-| `infra/dm/models.py` `get_infra()` + `RUSTFS_CONF_TEMPLATE` | plugin: `infra_spec()` |
-| `paas/services/builder.py` `_get_buckets/users/policies/access_keys` | plugin: `node_payload()` |
-| `agent/universal/drivers/s3.py` | plugin: dp_driver (in DP image) |
-| `s3aas.yaml.j2` IAM boilerplate (~150 lines) | runtime: auto-IAM from `iam_actions` |
-| `app/cmd/gservice/orch/status/common` | delete (present in runtime) |
+| **Generic runtime bases** (`PaaSInstance`, `PaaSVersion`, generic `InfraBuilder`/`PaaSBuilder`) | Per-plugin boilerplate: each plugin writes its own full infra/paas builders. Currently in `exordos_mail`; not extracted into the runtime. |
+| **Auto-IAM from `iam_actions`** | Each plugin declares its IAM permissions manually in its element manifest. No auto-generation from a plugin-supplied actions list. |
+| **Plugin registry status_api endpoint** | No public API to enumerate installed PaaS types and their versions. `metapaas_paas_types` is only visible via the db-back agent. |
+
+## Risk Register
+
+| Risk | Mitigation |
+|---|---|
+| **Blast radius** — all PaaSes share one CP | Sharding / multiple metapaas instances as a future option. |
+| **Plugin migration safety** in shared DB | Hard invariant: `tablename` must start with `slug_`. |
+| **Dynamic route mounting** | Mitigated: `setattr` + entry-point loading already proven in gcl_sdk and s3 `app.py`. |
+| **Runtime pip install** | Rolling-restart of workers instead of in-process module injection. |
+| **Infra logic divergence** | s3 and db have diverged copies of node-key/shrink/sizing logic; extracting generic `InfraBuilder` into the runtime will require reconciling them. |
 
 ---
 
 ## Guides
 
 📖 **[HOW_TO_BUILD_NEW_PAAS.md](HOW_TO_BUILD_NEW_PAAS.md)** — Step-by-step guide for building a new PaaS plugin
-
-From CP/DP architecture to a complete working example:
-- Control Plane: models, controllers, IAM
-- Data Plane: install/bootstrap scripts, systemd, health checks
-- Manifest, build config, tests, CI/CD
-- Examples: mail-aas (Postfix+Dovecot), database-aas patterns
-- Validation checklist, common mistakes
