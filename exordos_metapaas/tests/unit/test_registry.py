@@ -38,6 +38,7 @@ class TestPaaSDefinitionDefaults:
 def _make_demo_ep():
     import importlib.metadata as im
     from unittest.mock import MagicMock
+
     from metapaas_demo.definition import DemoDefinition
 
     ep = MagicMock(spec=im.EntryPoint)
@@ -71,9 +72,37 @@ class TestDiscoverPaas:
             result = discover_paas()
         assert result["demo"].get_migrations_path() is not None
 
+    def test_demo_element_name_set(self) -> None:
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
+        assert result["demo"].element_name == "metapaas-demo"
+
+    def test_demo_agent_models_has_instances_and_versions(self) -> None:
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
+        models = result["demo"].get_agent_models()
+        assert "versions" in models
+        assert "instances" in models
+
+    def test_demo_agent_filters_has_instances_and_versions(self) -> None:
+        import importlib.metadata as im
+        from unittest.mock import patch
+
+        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+            result = discover_paas()
+        filters = result["demo"].get_agent_filters()
+        assert "versions" in filters
+        assert "instances" in filters
+
     def test_duplicate_slug_raises(self) -> None:
         import importlib.metadata as im
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         ep1 = MagicMock()
         ep1.name = "ep1"
@@ -91,7 +120,7 @@ class TestDiscoverPaas:
 
     def test_no_slug_skipped(self) -> None:
         import importlib.metadata as im
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         ep = MagicMock()
         ep.name = "bad"

@@ -12,9 +12,9 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from gcl_sdk.agents.universal.status_api import routes as status_routes
 from restalchemy.api import routes
 
-from gcl_sdk.agents.universal.status_api import routes as status_routes
 from exordos_metapaas.status_api.api import controllers
 
 

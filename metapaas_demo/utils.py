@@ -12,23 +12,18 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from restalchemy.api import controllers as ra_controllers
-from restalchemy.api import resources as ra_resources
-
-from metapaas_demo import models
+from restalchemy.dm import filters as dm_filters
 
 
-class DemoController(ra_controllers.RoutesListController):
-    """Controller for /v1/types/demo/ endpoint"""
+def remove_all_dm(dm_class, filters, session=None, **kwargs):
+    for dm in dm_class.objects.get_all(filters=filters, session=session):
+        dm.delete(session=session, **kwargs)
 
-    __TARGET_PATH__ = "/v1/types/demo/"
 
-
-class DemoInstanceController(ra_controllers.BaseResourceControllerPaginated):
-    """CRUD controller for /v1/types/demo/instances/"""
-
-    __resource__ = ra_resources.ResourceByRAModel(
-        model_class=models.DemoInstance,
-        convert_underscore=False,
-        process_filters=True,
+def remove_nested_dm(dm_class, parent_field_name, parent, session=None, **kwargs):
+    remove_all_dm(
+        dm_class,
+        filters={parent_field_name: dm_filters.EQ(parent)},
+        session=session,
+        **kwargs,
     )

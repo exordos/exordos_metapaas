@@ -16,8 +16,8 @@ import logging
 
 from oslo_config import cfg
 
-from exordos_metapaas.common import constants
 from exordos_metapaas import version
+from exordos_metapaas.common import constants
 
 GLOBAL_SERVICE_NAME = constants.GLOBAL_SERVICE_NAME
 

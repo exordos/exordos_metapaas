@@ -14,18 +14,24 @@
 
 from restalchemy.api import routes
 
-from metapaas_demo import controllers
+from metapaas_demo.controlplane.api import controllers
 
 
 class DemoInstanceRoute(routes.Route):
     __controller__ = controllers.DemoInstanceController
 
 
+class DemoVersionRoute(routes.Route):
+    __controller__ = controllers.DemoVersionController
+
+
 class DemoRoute(routes.Route):
-    """Handler for /v1/types/demo/ endpoint"""
+    """Handler for /v1/types/demo/ endpoint (mounted by metapaas)."""
 
     __controller__ = controllers.DemoController
     __allow_methods__ = [routes.FILTER]
 
-    # route to /v1/types/demo/instances/[<uuid>]
+    # /v1/types/demo/instances/[<uuid>]
     instances = routes.route(DemoInstanceRoute)
+    # /v1/types/demo/versions/[<uuid>]
+    versions = routes.route(DemoVersionRoute)
