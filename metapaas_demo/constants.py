@@ -12,16 +12,5 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from gcl_sdk.agents.universal.orch_api import routes as orch_routes
-from restalchemy.api import routes
-
-from exordos_metapaas.orch_api.api import controllers
-
-
-class ApiEndpointRoute(routes.Route):
-    """Handler for /v1/ endpoint"""
-
-    __controller__ = controllers.ApiEndpointController
-    __allow_methods__ = [routes.FILTER]
-
-    agents = routes.route(orch_routes.UniversalAgentsRoute)
+# Path on the dataplane node where the control plane delivers the demo env config.
+DEMO_ENV_FILE = "/etc/exordos_metapaas/demo.env"

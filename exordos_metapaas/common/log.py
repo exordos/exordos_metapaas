@@ -13,11 +13,11 @@
 #    under the License.
 
 import logging
-from logging import config as logging_config
 import sys
+from logging import config as logging_config
 
-from oslo_config import cfg
 import yaml
+from oslo_config import cfg
 
 DEFAULT_CONFIG = {
     "version": 1,

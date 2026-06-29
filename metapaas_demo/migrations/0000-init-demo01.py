@@ -30,21 +30,41 @@ class MigrationStep(migrations.AbstarctMigrationStep):
     def upgrade(self, session):
         expressions = [
             """\
-CREATE TABLE demo_instances (
+CREATE TABLE demo_versions (
     uuid UUID PRIMARY KEY,
-    name VARCHAR(255) NOT NULL DEFAULT '',
-    description VARCHAR(255) NOT NULL DEFAULT '',
-    size INT NOT NULL DEFAULT 1 CHECK (size BETWEEN 1 AND 1024),
+    name VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    image TEXT,
     created_at TIMESTAMP NOT NULL,
     updated_at TIMESTAMP NOT NULL
 );
+""",
+            """\
+CREATE TABLE demo_instances (
+    uuid UUID PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    project_id UUID NOT NULL,
+    status VARCHAR(64) NOT NULL DEFAULT 'NEW',
+    cpu INT NOT NULL CHECK (cpu BETWEEN 1 AND 128),
+    ram INT NOT NULL CHECK (ram BETWEEN 512 AND 1073741824),
+    disk_size INT NOT NULL CHECK (disk_size BETWEEN 8 AND 1073741824),
+    version UUID NOT NULL,
+    "ipsv4" VARCHAR(15) ARRAY,
+    created_at TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP NOT NULL,
+    FOREIGN KEY (version) REFERENCES demo_versions(uuid)
+);
+
+CREATE INDEX ON demo_instances(project_id, name);
 """,
         ]
         for expression in expressions:
             session.execute(expression)
 
     def downgrade(self, session):
-        session.execute("DROP TABLE IF EXISTS demo_instances;")
+        for table in ("demo_instances", "demo_versions"):
+            self._delete_table_if_exists(session, table)
 
 
 migration_step = MigrationStep()

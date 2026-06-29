@@ -12,16 +12,21 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from gcl_sdk.agents.universal.orch_api import routes as orch_routes
-from restalchemy.api import routes
-
-from exordos_metapaas.orch_api.api import controllers
+from metapaas_demo.controlplane.dm import models
 
 
-class ApiEndpointRoute(routes.Route):
-    """Handler for /v1/ endpoint"""
+class TestDemoVersion:
+    def test_tablename(self) -> None:
+        assert models.DemoVersion.__tablename__ == "demo_versions"
 
-    __controller__ = controllers.ApiEndpointController
-    __allow_methods__ = [routes.FILTER]
 
-    agents = routes.route(orch_routes.UniversalAgentsRoute)
+class TestDemoInstance:
+    def test_tablename(self) -> None:
+        assert models.DemoInstance.__tablename__ == "demo_instances"
+
+    def test_status_values(self) -> None:
+        values = [s.value for s in models.DemoStatus]
+        assert "NEW" in values
+        assert "IN_PROGRESS" in values
+        assert "ACTIVE" in values
+        assert "ERROR" in values

@@ -72,9 +72,10 @@ def _load_plugin_cache() -> dict:
     _live_slugs = frozenset(new_slugs)
     # Lazy import: app.py imports this module at top level, so importing it
     # here would be circular at load time — but by call time it's fully loaded.
-    from exordos_metapaas.user_api.api.app import UserApiApp
     from restalchemy.api import resources as ra_resources
     from restalchemy.api import routes as ra_routes
+
+    from exordos_metapaas.user_api.api.app import UserApiApp
 
     ra_resources.ResourceMap.set_resource_map(
         ra_routes.Route.build_resource_map(UserApiApp)
