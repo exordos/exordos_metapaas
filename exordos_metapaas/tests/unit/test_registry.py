@@ -35,70 +35,38 @@ class TestPaaSDefinitionDefaults:
         assert PaaSDefinition().get_agent_filters() == {}
 
 
-def _make_demo_ep():
+def _make_stub_ep(name: str = "stub", slug: str = "stub"):
+    """Build an EntryPoint mock loading an inline PaaSDefinition subclass.
+
+    The runtime discovers plugins purely via entry-points, so these tests use a
+    local stub rather than any concrete plugin — metapaas_demo is a separate
+    package and its conformance is covered by its own test suite.
+    """
     import importlib.metadata as im
     from unittest.mock import MagicMock
 
-    from metapaas_demo.definition import DemoDefinition
-
     ep = MagicMock(spec=im.EntryPoint)
-    ep.name = "demo"
-    ep.load.return_value = DemoDefinition
+    ep.name = name
+    ep.load.return_value = type("StubDefinition", (PaaSDefinition,), {"slug": slug})
     return ep
 
 
 class TestDiscoverPaas:
-    def test_finds_demo_plugin(self) -> None:
+    def test_finds_plugin(self) -> None:
         import importlib.metadata as im
         from unittest.mock import patch
 
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+        with patch.object(im, "entry_points", return_value=[_make_stub_ep(slug="demo")]):
             result = discover_paas()
         assert "demo" in result
 
-    def test_demo_slug_matches_key(self) -> None:
+    def test_slug_matches_key(self) -> None:
         import importlib.metadata as im
         from unittest.mock import patch
 
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
+        with patch.object(im, "entry_points", return_value=[_make_stub_ep(slug="demo")]):
             result = discover_paas()
         assert result["demo"].slug == "demo"
-
-    def test_demo_migrations_path_set(self) -> None:
-        import importlib.metadata as im
-        from unittest.mock import patch
-
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
-            result = discover_paas()
-        assert result["demo"].get_migrations_path() is not None
-
-    def test_demo_element_name_set(self) -> None:
-        import importlib.metadata as im
-        from unittest.mock import patch
-
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
-            result = discover_paas()
-        assert result["demo"].element_name == "metapaas-demo"
-
-    def test_demo_agent_models_has_instances_and_versions(self) -> None:
-        import importlib.metadata as im
-        from unittest.mock import patch
-
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
-            result = discover_paas()
-        models = result["demo"].get_agent_models()
-        assert "versions" in models
-        assert "instances" in models
-
-    def test_demo_agent_filters_has_instances_and_versions(self) -> None:
-        import importlib.metadata as im
-        from unittest.mock import patch
-
-        with patch.object(im, "entry_points", return_value=[_make_demo_ep()]):
-            result = discover_paas()
-        filters = result["demo"].get_agent_filters()
-        assert "versions" in filters
-        assert "instances" in filters
 
     def test_duplicate_slug_raises(self) -> None:
         import importlib.metadata as im
