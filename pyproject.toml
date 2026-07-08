@@ -68,10 +68,10 @@ exordos-metapaas-gservice = "exordos_metapaas.cmd.gservice:main"
 exordos-metapaas-render-config = "exordos_metapaas.cmd.render_config:main"
 exordos-metapaas-install-paas = "exordos_metapaas.cmd.install_paas:main"
 
-# PaaS plugins register a PaaSDefinition here. The bundled demo plugin proves
-# the entry-point -> routes -> migrations wiring end-to-end.
-# [project.entry-points."exordos_metapaas_paas"]
-# demo = "metapaas_demo.definition:DemoDefinition"
+# PaaS plugins register a PaaSDefinition here via the "exordos_metapaas_paas"
+# entry-point group. The prod runtime ships no plugins itself; the reference
+# demo plugin is a standalone project under metapaas_demo/ with its own
+# pyproject.toml and is installed separately.
 
 [tool.uv]
 package = true
@@ -119,7 +119,4 @@ ignore_missing_imports = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["exordos_metapaas*", "metapaas_demo*"]
-
-[tool.setuptools.package-data]
-metapaas_demo = ["migrations/*.py"]
+include = ["exordos_metapaas*"]

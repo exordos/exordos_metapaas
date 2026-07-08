@@ -1,0 +1,83 @@
+name: "metapaas-demo"
+description: "Install the demo PaaS into the metapaas control plane."
+schema_version: 1
+version: "{{ version }}"
+api_version: "v1"
+
+requirements:
+  core:
+    from_version: "0.0.0"
+  metapaas:
+    from_version: "0.0.0"
+
+resources:
+
+  # Register the demo PaaS type in metapaas. The PluginReconciler watches this
+  # resource and (pip-)installs the package at runtime on metapaas-cp. The demo
+  # plugin ships bundled inside the exordos_metapaas wheel (see
+  # [tool.setuptools.packages.find] include = metapaas_demo*), so it is already
+  # present on the CP image — registering the type is what activates its routes,
+  # migrations and agent model/filter maps.
+  $metapaas.types:
+    demo:
+      name: "demo"
+      element_name: "metapaas-demo"      # ← must match DemoDefinition.element_name
+      package: "exordos_metapaas"
+      version: "{{ pkg_version | default('') }}"
+      index_url: "{{ index_url | default('') }}"
+      project_id: "4d657461-0000-0000-0000-000000000002"
+
+  # Demo IAM permissions bound to the metapaas project owner role.
+  # Names must match __policy_service_name__ + __policy_name__ in controllers.py:
+  #   metapaas_demo.demo_instance.*  →  DemoInstanceController
+  #   metapaas_demo.demo_version.read → DemoVersionController
+  $core.iam.permissions:
+    demo_instance_create:
+      name: "metapaas_demo.demo_instance.create"
+    demo_instance_read:
+      name: "metapaas_demo.demo_instance.read"
+    demo_instance_update:
+      name: "metapaas_demo.demo_instance.update"
+    demo_instance_delete:
+      name: "metapaas_demo.demo_instance.delete"
+    demo_version_read:
+      name: "metapaas_demo.demo_version.read"
+
+  # Bind each permission to the owner role (726f6c65-...-0002) in the metapaas
+  # project (4d657461-...-0002). Any user granted owner in that project can use
+  # the demo API. Multitenancy is enforced at the CP layer via ModelWithProject.
+  $core.iam.permissionbinding:
+    demo_instance_create_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      permission: $core.iam.permissions.$demo_instance_create:uuid
+      project_id: "4d657461-0000-0000-0000-000000000002"
+    demo_instance_read_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      permission: $core.iam.permissions.$demo_instance_read:uuid
+      project_id: "4d657461-0000-0000-0000-000000000002"
+    demo_instance_update_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      permission: $core.iam.permissions.$demo_instance_update:uuid
+      project_id: "4d657461-0000-0000-0000-000000000002"
+    demo_instance_delete_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      permission: $core.iam.permissions.$demo_instance_delete:uuid
+      project_id: "4d657461-0000-0000-0000-000000000002"
+    demo_version_read_binding:
+      role: "726f6c65-0000-0000-0000-000000000002"
+      permission: $core.iam.permissions.$demo_version_read:uuid
+      project_id: "4d657461-0000-0000-0000-000000000002"
+
+  # Demo dataplane version catalog entry. `description` carries the exordos_core
+  # EM_PROJECT_ID (must match the core-agent [filters] value rendered by
+  # exordos-metapaas-render-config) for the version filter.
+  # Namespace: $<element_name>.types.<slug>.versions  ← element_name, not slug
+  $metapaas-demo.types.demo.versions:
+    demo_v1:
+      name: "demo_v1"
+      description: "12345678-c625-4fee-81d5-f691897b8142"
+      image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/metapaas-demo/{{ version }}/images/exordos-metapaas-demo-dp.raw.zst"
+
+exports:
+  demo_v1:
+    link: "$metapaas-demo.types.demo.versions.$demo_v1"
