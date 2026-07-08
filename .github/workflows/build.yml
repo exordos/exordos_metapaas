@@ -74,10 +74,11 @@ jobs:
       - name: Set hypervisor with overbooking
         run: |
           set -eux
-          # The hypervisor registers with the freshly-bootstrapped core
-          # asynchronously; wait for it to appear before updating overbooking.
+          # The JSON key is lowercase "uuid" (as in exordos_mail/exordos_s3);
+          # ".UUID" always yields null → the update got a null name. Also wait
+          # for the hypervisor to register with the freshly-bootstrapped core.
           for i in {1..60}; do
-            HYPER_UUID="$(exordos c h l -o json | jq -r '.[0].UUID // empty')"
+            HYPER_UUID="$(exordos c h l -o json | jq -r '.[0].uuid // empty')"
             [ -n "$HYPER_UUID" ] && break
             echo "Waiting for hypervisor to register... ($i/60)"
             sleep 5
