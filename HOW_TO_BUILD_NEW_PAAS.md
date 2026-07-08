@@ -537,13 +537,14 @@ resources:
       permission: $core.iam.permissions.$foo_version_read:uuid
       project_id: "4d657461-0000-0000-0000-000000000002"
 
-  # Dataplane version catalog. `description` carries the metapaas project id
-  # for the core-agent version filter.
+  # Dataplane version catalog. `description` carries the EM project id
+  # (exordos_core EM_PROJECT_ID, must match the core-agent [filters] value
+  # rendered by exordos-metapaas-render-config) for the version filter.
   # Namespace: $<element_name>.types.<slug>.versions  ← note: element_name, not slug
   $foo-aas.types.foo.versions:
     foo_v1:
       name: "foo_v1"
-      description: "4d657461-0000-0000-0000-000000000002"
+      description: "12345678-c625-4fee-81d5-f691897b8142"
       image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/{{ name }}/{{ version }}/images/exordos-metapaas-foo-dp.raw.zst"
 
 exports:
