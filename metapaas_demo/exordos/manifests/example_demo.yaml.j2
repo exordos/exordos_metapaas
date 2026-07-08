@@ -1,0 +1,36 @@
+name: "example_demo"
+description: "Example: a demo instance hosted by the metapaas control plane, created declaratively via the metapaas-demo element API"
+schema_version: 1
+version: "{{ version }}"
+api_version: "v1"
+
+requirements:
+  core:
+    from_version: "0.0.0"
+  metapaas-demo:
+    from_version: "0.0.0"
+
+resources:
+
+  # A demo instance in the metapaas project. The metapaas db-back core-agent
+  # reconciles this into the metapaas DB (kind em_metapaas_demo_types_demo_instances);
+  # the demo plugin's infra builder then provisions a NodeSet whose node boots
+  # from the demo dataplane image referenced by the version below.
+  $metapaas-demo.types.demo.instances:
+    example_demo:
+      name: "example-demo"
+      project_id: "4d657461-0000-0000-0000-000000000002"
+      cpu: 1
+      ram: 1024
+      disk_size: 10
+      version: $example_demo.imports.$demo_v1:uuid
+
+imports:
+  demo_v1:
+    element: "$metapaas-demo"
+    kind: "resource"
+    link: "$metapaas-demo.types.demo.versions.$demo_v1"
+
+exports:
+  instance:
+    link: "$metapaas-demo.types.demo.instances.$example_demo"

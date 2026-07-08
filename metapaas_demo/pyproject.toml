@@ -1,0 +1,81 @@
+[project]
+name = "metapaas_demo"
+description = "Reference demo PaaS plugin for the Exordos MetaPaaS runtime"
+readme = "README.md"
+authors = [{name = "Genesis Corporation", email = "mail@gmelikov.ru"}]
+version = "0.0.1"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "oslo.config>=3.22.2,<10.0.0",
+    "restalchemy>=15.0.0,<16.0.0",
+    "gcl_iam>=1.0.3,<2.0.0",
+    "gcl_looper>=1.2.3,<2.0.0",
+    "gcl_sdk>=3.0.5,<4.0.0",
+    "exordos_metapaas>=0.0.1",
+]
+
+# The demo plugin registers itself with the metapaas runtime and the universal
+# agent here — NOT in the prod exordos_metapaas package, which must not ship
+# the demo. Installing this package is what activates the demo PaaS.
+[project.entry-points."exordos_metapaas_paas"]
+demo = "metapaas_demo.definition:DemoDefinition"
+
+[project.entry-points."gcl_sdk_universal_agent"]
+DemoCapabilityDriver = "metapaas_demo.dataplane.driver:DemoCapabilityDriver"
+
+[build-system]
+requires = ["setuptools>=75.3.3"]
+build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+test = [
+    "coverage>=4.0",
+    "pytest>=8.0.0,<9.0.0",
+    "pytest-timer>=1.0.0,<2.0.0",
+    "mock>=3.0.5,<4.0.0",
+]
+ruff = ["ruff"]
+mypy = ["mypy"]
+
+[tool.uv]
+package = true
+
+# pyproject lives inside the package directory, so map the package name to "."
+[tool.setuptools]
+packages = [
+    "metapaas_demo",
+    "metapaas_demo.controlplane",
+    "metapaas_demo.controlplane.api",
+    "metapaas_demo.controlplane.dm",
+    "metapaas_demo.controlplane.infra",
+    "metapaas_demo.controlplane.infra.dm",
+    "metapaas_demo.controlplane.infra.services",
+    "metapaas_demo.controlplane.paas",
+    "metapaas_demo.controlplane.paas.dm",
+    "metapaas_demo.controlplane.paas.services",
+    "metapaas_demo.dataplane",
+    "metapaas_demo.migrations",
+]
+
+[tool.setuptools.package-dir]
+metapaas_demo = "."
+
+[tool.setuptools.package-data]
+metapaas_demo = ["migrations/*.py"]
+
+[tool.ruff]
+line-length = 88
+indent-width = 4
+target-version = "py310"
+exclude = [".venv", "build", "dist", "output", "__pycache__"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+fixable = ["ALL"]
+
+[tool.coverage.run]
+branch = true
+source = ["metapaas_demo"]
+command_line = "-m pytest -s metapaas_demo/tests/unit"
+omit = ["metapaas_demo/tests/*", ".venv"]
