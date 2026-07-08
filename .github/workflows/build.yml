@@ -73,8 +73,17 @@ jobs:
           done
       - name: Set hypervisor with overbooking
         run: |
-          HYPER_UUID="$(exordos c h l -o json | jq -r .[0]."UUID")"
-          exordos compute hypervisors update $HYPER_UUID --cores-ratio 10.0 --ram-ratio 10.0
+          set -eux
+          # The hypervisor registers with the freshly-bootstrapped core
+          # asynchronously; wait for it to appear before updating overbooking.
+          for i in {1..60}; do
+            HYPER_UUID="$(exordos c h l -o json | jq -r '.[0].UUID // empty')"
+            [ -n "$HYPER_UUID" ] && break
+            echo "Waiting for hypervisor to register... ($i/60)"
+            sleep 5
+          done
+          test -n "$HYPER_UUID"   # fail clearly if it never registered
+          exordos compute hypervisors update "$HYPER_UUID" --cores-ratio 10.0 --ram-ratio 10.0
       - name: Preload dependencies in background
         run: |
           for dep in $ELEMENT_DEPS; do
