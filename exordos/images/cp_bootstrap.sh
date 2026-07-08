@@ -25,6 +25,10 @@ SERVICE_CONFIG="/etc/exordos_metapaas/exordos_metapaas.conf"
 PG_VERSION="18"
 
 while [ ! -f /etc/exordos_init.txt ]; do sleep 1; done
+
+# Disable command tracing while handling secrets so they never land in the
+# systemd journal / boot log. Re-enabled right after.
+set +x
 source /etc/exordos_init.txt
 
 # IAM (for user-api token validation)
@@ -39,6 +43,7 @@ export AUDIENCE="${AUDIENCE:-}"
 export GC_PG_USER="${GC_PG_USER:-metapaas}"
 export GC_PG_PASS="${GC_PG_PASS:-$(generate_secure_password)}"
 export GC_PG_DB="${GC_PG_DB:-metapaas}"
+set -x
 
 # --- Persistent data disk ---------------------------------------------------
 # The control-plane DB is stateful, so its data must survive root/image
@@ -65,7 +70,9 @@ source "$GC_PATH"/.venv/bin/activate
 
 # First boot only: create the embedded control-plane DB user/db.
 if [[ ! -f $SERVICE_CONFIG ]]; then
+    set +x  # $GC_PG_PASS is passed as an argument — keep it out of the trace
     setup_postgresql_user_and_db "$GC_PG_USER" "$GC_PG_PASS" "$GC_PG_DB"
+    set -x
 fi
 
 # Render the gservice + core-agent configs from the installed PaaS registry —

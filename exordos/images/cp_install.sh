@@ -44,9 +44,15 @@ sudo apt install -y \
 # /var/lib/postgresql onto the persistent data disk before starting it.
 sudo systemctl disable --now postgresql
 
-echo "ubuntu:ubuntu" | sudo chpasswd
-sudo rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-sudo yq -yi '.system_info.default_user.lock_passwd |= false' /etc/cloud/cloud.cfg
+# Optional dev/lab access: set a well-known ubuntu:ubuntu password and enable
+# SSH password auth. NEVER enable on production images — access there is
+# governed by the parent core (ssh key / user capabilities). Gated behind
+# ALLOW_USER_PASSWD to match the core/db/eci image convention.
+if [ -n "${ALLOW_USER_PASSWD-}" ]; then
+    echo "ubuntu:ubuntu" | sudo chpasswd
+    sudo rm -f /etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+    sudo yq -yi '.system_info.default_user.lock_passwd |= false' /etc/cloud/cloud.cfg
+fi
 
 # Install exordos metapaas configuration. The gservice + core-agent configs are
 # generated at boot by exordos-metapaas-render-config from the PaaS registry
