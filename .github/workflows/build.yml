@@ -104,7 +104,7 @@ jobs:
         run: |
           set -eux
 
-          while [ $(exordos ee l -o json -f name=$ELEMENT_NAME | jq -r .[0]."Status") != "ACTIVE" ]; do
+          while [ $(exordos ee l -o json -f name=$ELEMENT_NAME | jq -r .[0]."status") != "ACTIVE" ]; do
             sleep 5
           done
 
