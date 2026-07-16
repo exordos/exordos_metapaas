@@ -17,7 +17,17 @@ make build
 
 ```bash
 exordos -e http://10.20.0.2:11010 -u admin -p <password> \
-  ee install metapaas --version 0.0.7 --repository https://repo.exordos.com/exordos-elements
+  ee install metapaas --version <version>
+```
+
+The element is resolved by name across the repositories registered in the
+core (the official one is registered at bootstrap). To install from another
+repository (e.g. a local mirror), register it first with a higher priority:
+
+```bash
+exordos -e http://10.20.0.2:11010 -u admin -p <password> \
+  repo add -p <project-uuid> -n local-mirror \
+  --repo-url http://10.20.0.1:8081/exordos-elements/ --priority 4096
 ```
 
 ### Create a PaaS Instance
@@ -26,7 +36,7 @@ Once metapaas is deployed, install a plugin (e.g., s3aas):
 
 ```bash
 exordos -e http://10.20.0.2:11010 -u admin -p <password> \
-  ee install s3aas --version 0.0.1 --repository https://repo.exordos.com/exordos-elements
+  ee install s3aas --version 0.0.5
 ```
 
 Then create an instance via the metapaas-cp REST API:
