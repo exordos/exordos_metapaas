@@ -23,7 +23,9 @@ any package not yet present (see ``exordos_metapaas.services.plugin_reconciler``
 """
 
 from gcl_sdk.agents.universal.dm import models as ua_models  # patches SQLStorableMixin
-from restalchemy.dm import models, properties, types
+from restalchemy.dm import models
+from restalchemy.dm import properties
+from restalchemy.dm import types
 from restalchemy.storage.sql import orm
 
 

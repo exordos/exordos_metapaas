@@ -15,6 +15,7 @@
 import os
 
 from exordos_metapaas.registry import PaaSDefinition
+
 from metapaas_demo.controlplane.api import routes
 
 

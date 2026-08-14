@@ -12,7 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from exordos_metapaas.registry import PaaSDefinition, discover_paas
+from exordos_metapaas.registry import PaaSDefinition
+from exordos_metapaas.registry import discover_paas
 
 
 class TestPaaSDefinitionDefaults:
@@ -56,7 +57,9 @@ class TestDiscoverPaas:
         import importlib.metadata as im
         from unittest.mock import patch
 
-        with patch.object(im, "entry_points", return_value=[_make_stub_ep(slug="demo")]):
+        with patch.object(
+            im, "entry_points", return_value=[_make_stub_ep(slug="demo")]
+        ):
             result = discover_paas()
         assert "demo" in result
 
@@ -64,13 +67,16 @@ class TestDiscoverPaas:
         import importlib.metadata as im
         from unittest.mock import patch
 
-        with patch.object(im, "entry_points", return_value=[_make_stub_ep(slug="demo")]):
+        with patch.object(
+            im, "entry_points", return_value=[_make_stub_ep(slug="demo")]
+        ):
             result = discover_paas()
         assert result["demo"].slug == "demo"
 
     def test_duplicate_slug_raises(self) -> None:
         import importlib.metadata as im
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
 
         ep1 = MagicMock()
         ep1.name = "ep1"
@@ -88,7 +94,8 @@ class TestDiscoverPaas:
 
     def test_no_slug_skipped(self) -> None:
         import importlib.metadata as im
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
+        from unittest.mock import patch
 
         ep = MagicMock()
         ep.name = "bad"
