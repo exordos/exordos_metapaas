@@ -23,7 +23,8 @@ from restalchemy.storage.sql import engines
 
 from exordos_metapaas.common import log as infra_log
 from exordos_metapaas.registry import discover_paas
-from exordos_metapaas.services.gservice import InfraScheduler, UAgent
+from exordos_metapaas.services.gservice import InfraScheduler
+from exordos_metapaas.services.gservice import UAgent
 from exordos_metapaas.services.plugin_reconciler import PluginReconciler
 
 CONF = cfg.CONF

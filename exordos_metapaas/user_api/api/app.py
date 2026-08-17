@@ -13,7 +13,9 @@
 #    under the License.
 
 from gcl_iam import middlewares as iam_mw
-from restalchemy.api import applications, middlewares, routes
+from restalchemy.api import applications
+from restalchemy.api import middlewares
+from restalchemy.api import routes
 from restalchemy.api.middlewares import logging as logging_mw
 from restalchemy.openapi import engines as openapi_engines
 from restalchemy.openapi import structures as openapi_structures

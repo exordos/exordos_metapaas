@@ -13,7 +13,9 @@
 #    under the License.
 
 from gcl_sdk.agents.universal.api import middlewares as sdk_mw
-from restalchemy.api import applications, middlewares, routes
+from restalchemy.api import applications
+from restalchemy.api import middlewares
+from restalchemy.api import routes
 from restalchemy.api.middlewares import errors as errors_mw
 from restalchemy.api.middlewares import logging as logging_mw
 from restalchemy.openapi import engines as openapi_engines

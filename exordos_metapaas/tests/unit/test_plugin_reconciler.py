@@ -12,10 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from exordos_metapaas.services.plugin_reconciler import (
-    PluginReconciler,
-    _looks_like_url,
-)
+from exordos_metapaas.services.plugin_reconciler import PluginReconciler
+from exordos_metapaas.services.plugin_reconciler import _looks_like_url
 
 
 class _FakePlugin:
