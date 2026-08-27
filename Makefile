@@ -1,11 +1,11 @@
 SHELL := bash
 SSH_KEY    ?= ~/.ssh/id_ed25519.pub
-REPOSITORY ?= http://10.20.0.1:8080/exordos-elements
 
 all: help
 
 help:
 	@echo "build       - build the metapaas element image + manifest"
+	@echo "deploy      - deploy the built element to the current realm (one step, no push)"
 	@echo "install     - install the metapaas element into Core"
 	@echo "lint        - run ruff check"
 	@echo "format      - run ruff format"
@@ -13,8 +13,10 @@ help:
 	@echo "typecheck   - run mypy"
 
 build:
-	exordos build -c exordos/exordos.yaml -i $(SSH_KEY) -f \
-		--manifest-var repository=$(REPOSITORY)
+	exordos build -c exordos/exordos.yaml -i $(SSH_KEY) -f
+
+deploy:
+	exordos deploy -e output
 
 install:
 	exordos em elements install output/manifests/metapaas.yaml

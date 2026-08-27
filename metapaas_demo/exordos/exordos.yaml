@@ -34,6 +34,11 @@ build:
 
     # demo dataplane image (launched per demo instance by the infra builder)
     - manifest: manifests/metapaas-demo.yaml.j2
+      artifacts:
+        - script: images/build_wheel.sh
+          name: pypi_package
+          artifacts:
+            - ../dist/*.whl
       images:
       - name: exordos-metapaas-demo-dp
         format: GEN_IMG_FORMAT_CORE=zst
