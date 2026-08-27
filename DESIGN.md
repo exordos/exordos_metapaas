@@ -168,7 +168,9 @@ installs before a single restart.
 ```
 metapaas_paas_types               (runtime table — not a plugin table)
   uuid, name (slug), element_name
-  package, version, index_url     ← pip install spec
+  package, version, index_url     ← pip install spec (package is a wheel URN in the
+                                    recommended build flow; version and index_url
+                                    are optional and ignored for URN/URL packages)
   status                          ← NEW | ACTIVE (reset to NEW on version change)
 
 <slug>_*                          (per-plugin tables; tablename must start with slug_)
@@ -217,13 +219,56 @@ The DP agent calls the driver on every reconciliation cycle (~every few seconds)
 - Salted hashes (bcrypt, sha512crypt) — use `property.old_value` to verify plaintext
   against the stored hash before re-hashing; a new salt each cycle causes a restart loop.
 
+## PaaS→IaaS Readiness Gating (Invariant for All PaaS Plugins)
+
+A PaaS-layer `Instance` model (in `controlplane/paas/dm/models.py`) must mix in
+`DependenciesActiveReadinessMixin` (from `gcl_sdk.agents.universal.dm.models`) and
+implement `get_readiness_dependencies()` returning the IaaS instance as a dependency:
+
+```python
+class FooInstance(
+    models.FooInstance,
+    ua_models.InstanceWithDerivativesMixin,
+    ua_models.DependenciesActiveReadinessMixin,
+):
+    def get_readiness_dependencies(self):
+        return (ua_models.RI("foo_instance_iaas", self.uuid),)
+```
+
+The `RI` kind must match the infra-layer instance model's `get_resource_kind()`.
+This gates the PaaS builder from persisting the derivative (`ua_target_resources`)
+until the IaaS instance is `ACTIVE` — i.e. until the compute set is provisioned
+and the dataplane agent is (or is about to be) registered in `ua_agents`.
+
+Without this gate the builder can try to persist the derivative before the agent
+row exists in `ua_agents`, hitting a foreign-key violation on
+`ua_target_resources.agent_uuid → ua_agents.uuid` that rolls back the entire
+reconciliation transaction — including any child-resource work done in the same
+tick — and leaves the instance stuck in `IN_PROGRESS`. This is a **race**
+(depends on IaaS reaching `ACTIVE` before the first builder tick), so it can pass
+on a fast stand and fail on a slow one. First discovered and fixed in
+`exordos_observability` (M8); see `HOW_TO_BUILD_NEW_PAAS.md` §3.1b for the full
+pattern and the verified reference implementations.
+
 ## Plugin Packaging
 
-A plugin is packaged as a versioned Python distribution and specified in `PaaSType` as:
-- **pip name + version**: `package = "exordos-paas-mail"`, `version = "1.2.3"` — installed
-  from the configured index.
-- **URL/path**: `package = "https://repo.../exordos_paas_mail-1.2.3-py3-none-any.whl"` —
-  any `.whl` or `.tar.gz` pip understands.
+A plugin is packaged as a versioned Python distribution and specified in `PaaSType`.
+The recommended build flow resolves both the wheel and the DP image via URNs
+produced by the `exordos build` toolchain — no `--manifest-var` flags or hardcoded
+repository URLs:
+
+- **Wheel artifact URN** (recommended): `package = "{{ artifacts.pypi_package }}"` in
+  the manifest, backed by an `artifacts:` block in `exordos.yaml` that runs
+  `build_wheel.sh` and collects `../dist/*.whl`. The build toolchain turns this into
+  a wheel URN the PluginReconciler resolves via Core.
+- **DP image URN**: `image = "{{ images.exordos_metapaas_<name>_dp }}"` in the version
+  catalog, where `<name>_dp` is the image `name:` from `exordos.yaml` with dashes →
+  underscores. The build toolchain resolves this to the built image artifact.
+- **pip name + version** (ad-hoc, optional): `package = "exordos-paas-mail"`,
+  `version = "1.2.3"`, optionally with `index_url` pointing pip at a private index.
+  Still supported on the `PaaSType` model for installs outside the common build flow.
+- **URL/path** (ad-hoc, optional): `package = "https://repo.../exordos_paas_mail-1.2.3-py3-none-any.whl"`
+  — any `.whl` or `.tar.gz` pip understands.
 
 The DP driver ships separately inside the DP image (via gcl_sdk universal-agent entry-points).
 
@@ -244,6 +289,7 @@ The DP driver ships separately inside the DP image (via gcl_sdk universal-agent 
 | **Dynamic route mounting** | Mitigated: `setattr` + entry-point loading already proven in gcl_sdk and s3 `app.py`. |
 | **Runtime pip install** | Rolling-restart of workers instead of in-process module injection. |
 | **Infra logic divergence** | s3 and db have diverged copies of node-key/shrink/sizing logic; extracting generic `InfraBuilder` into the runtime will require reconciling them. |
+| **PaaS derivative persisted before DP agent registers** (FK violation race) | Mitigated: PaaS-layer `Instance` must mix in `DependenciesActiveReadinessMixin` gating on the IaaS instance being `ACTIVE` (see "PaaS→IaaS Readiness Gating" above). First hit in `exordos_observability` M8; `exordos_s3`/`metapaas_demo` predate the fix and should adopt the mixin. |
 
 ---
 

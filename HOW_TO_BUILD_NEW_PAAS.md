@@ -253,6 +253,100 @@ def _maybe_hash_password(self):
             self.password_hash = sha512_crypt.hash(self.password_hash)
 ```
 
+### 3.1b PaaS-layer model & PaaS→IaaS readiness gating
+
+**File:** `exordos_<name>/controlplane/paas/dm/models.py`
+
+The PaaS-layer `Instance` model is a *view* of the CP `Instance` model that the
+`PaaSBuilder` operates on. It mixes in `InstanceWithDerivativesMixin` (so the
+builder can schedule derivative resources to dataplane agents) and, critically,
+**`DependenciesActiveReadinessMixin`** to gate reconciliation on the IaaS
+instance being `ACTIVE`:
+
+```python
+import typing as tp
+import uuid as sys_uuid
+
+from gcl_sdk.agents.universal.dm import models as ua_models
+from gcl_sdk.infra.dm import models as sdk_models
+from restalchemy.dm import filters as ra_filters
+
+from exordos_foo.controlplane.dm import models
+from exordos_foo.controlplane.paas.dm import models as paas_models
+
+
+class FooInstanceNode(
+    paas_models.ModelWithUUID,
+    ua_models.TargetResourceKindAwareMixin,
+):
+    name = ...  # carried to the dataplane
+
+    @classmethod
+    def get_resource_kind(cls) -> str:
+        return "foo_instance_node"
+
+    def get_resource_target_fields(self) -> tp.Collection[str]:
+        return frozenset(("uuid", "name"))
+
+
+class FooInstance(
+    models.FooInstance,                                   # the CP model
+    ua_models.InstanceWithDerivativesMixin,
+    ua_models.DependenciesActiveReadinessMixin,           # ← gate on IaaS ACTIVE
+):
+    __master_model__ = sdk_models.NodeSet
+    __derivative_model_map__ = {"foo_instance_node": FooInstanceNode}
+
+    @classmethod
+    def get_resource_kind(cls) -> str:
+        return "foo_instance"
+
+    def get_readiness_dependencies(self) -> tp.Collection[ua_models.RI]:
+        """Depend on the IaaS instance being ACTIVE.
+
+        The PaaS derivative (foo_instance_node) is scheduled to the dataplane
+        agent, which only registers after the VM boots. The IaaS instance
+        becomes ACTIVE once the compute set is provisioned — a reliable signal
+        that the agent is (or is about to be) registered. Without this gate the
+        builder tries to persist the derivative before the agent row exists in
+        ua_agents, causing a foreign-key violation that rolls back the entire
+        transaction (including any child-resource content fetched in the same
+        iteration).
+        """
+        return (ua_models.RI("foo_instance_iaas", self.uuid),)
+
+    def get_resource_target_fields(self) -> tp.Collection[str]:
+        return frozenset(("uuid", "name"))
+
+    def get_actual_nodeset(self):
+        res = ua_models.Resource.objects.get_one(
+            filters={
+                "uuid": ra_filters.EQ(self.uuid),
+                "kind": ra_filters.EQ("node_set"),
+            }
+        )
+        return self.__master_model__.from_ua_resource(res)
+```
+
+**Why this matters:** without `DependenciesActiveReadinessMixin`, the PaaS
+builder can persist `ua_target_resources` (the derivative) before the dataplane
+agent has registered in `ua_agents`. That triggers a foreign-key violation on
+`ua_target_resources.agent_uuid → ua_agents.uuid`, which rolls back the whole
+reconciliation transaction — including any child-resource work (e.g. dashboard
+content fetched from an external provider) done in the same iteration. The
+instance then appears stuck in `IN_PROGRESS` and never converges. This is a
+**race**, not a deterministic failure: it depends on whether the IaaS instance
+reaches `ACTIVE` before the builder's first tick, so it can pass in dev and
+fail on a slower stand. Adding the mixin makes the builder skip the instance
+until the IaaS dependency is `ACTIVE`, which is the correct ordering.
+
+The `RI` (resource identifier) kind `"foo_instance_iaas"` must match the
+resource kind the `CoreInfraBuilder` produces for the IaaS instance — i.e. the
+`get_resource_kind()` of the infra-layer instance model (see
+`controlplane/infra/dm/models.py`). See `exordos_observability`'s
+`victoria/controlplane/paas/dm/models.py` and `grafana/controlplane/paas/dm/models.py`
+for the verified reference implementation.
+
 ### 3.2 Controllers
 
 **File:** `exordos_<name>/controlplane/api/controllers.py`
@@ -436,12 +530,11 @@ FooCapabilityDriver = "exordos_foo.driver:FooCapabilityDriver"
 ```
 
 When the `foo-aas` element is installed in exordos_core, the runtime:
-1. Fetches the wheel from `index_url` in the manifest
-2. `pip install`s it on metapaas-cp
-3. Loads `FooDefinition` via entrypoint
-4. Calls `get_type_route()` → mounts routes at `/v1/types/foo/`
-5. Calls `get_migrations_path()` → applies pending DB migrations
-6. Calls `get_builders(...)` → instantiates infra + paas builders
+1. Resolves the `package` field (a wheel artifact URN built by `exordos build`) and `pip install`s it on metapaas-cp
+2. Loads `FooDefinition` via entrypoint
+3. Calls `get_type_route()` → mounts routes at `/v1/types/foo/`
+4. Calls `get_migrations_path()` → applies pending DB migrations
+5. Calls `get_builders(...)` → instantiates infra + paas builders
 
 IAM permissions are declared entirely in the manifest (Step 4) — no Python-side permission list needed.
 
@@ -493,13 +586,15 @@ requirements:
 resources:
 
   # Register plugin with MetaPaaS. PluginReconciler watches this and
-  # pip-installs the package from index_url at runtime on metapaas-cp.
+  # pip-installs the package at runtime on metapaas-cp. The package is
+  # resolved from the wheel artifact built by the common build (see the
+  # `artifacts:` block in exordos.yaml) — no manual index_url or repository
+  # manifest-var needed.
   $metapaas.types:
     foo:
       name: "foo"
       element_name: "foo-aas"      # ← must match the element registration name
-      package: "exordos_foo"
-      index_url: "{{ index_url | default('') }}"
+      package: "{{ artifacts.pypi_package }}"
       project_id: "4d657461-0000-0000-0000-000000000002"
 
   # Permission names must match __policy_service_name__.__policy_name__.<action>
@@ -541,11 +636,16 @@ resources:
   # (exordos_core EM_PROJECT_ID, must match the core-agent [filters] value
   # rendered by exordos-metapaas-render-config) for the version filter.
   # Namespace: $<element_name>.types.<slug>.versions  ← note: element_name, not slug
+  #
+  # The image is referenced via the `images.<name>` URN variable, which the
+  # `exordos build` toolchain resolves to the built DP image artifact. The
+  # `<name>` matches the `name:` field of the image entry in exordos.yaml
+  # (dashes → underscores). No `repository` manifest-var or hardcoded URL.
   $foo-aas.types.foo.versions:
     foo_v1:
       name: "foo_v1"
       description: "12345678-c625-4fee-81d5-f691897b8142"
-      image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/{{ name }}/{{ version }}/images/exordos-metapaas-foo-dp.raw.zst"
+      image: "{{ images.exordos_metapaas_foo_dp }}"
 
 exports:
   foo_v1:
@@ -559,6 +659,8 @@ exports:
 **File:** `exordos/exordos.yaml`
 
 Two deps are always needed: the plugin package itself and `exordos_metapaas` runtime (which is not on PyPI and must be built from source in `dp_install.sh`).
+
+The PyPI wheel is built as part of the common `exordos build` run via an `artifacts:` block on the image element entry. The built wheel is exposed to the manifest as the `{{ artifacts.pypi_package }}` variable (referenced in `$metapaas.types` `package:`) and to the DP image build as a findable artifact. This replaces the old `--manifest-var index_url=...` / `--manifest-var repository=...` Makefile flags — the build toolchain resolves everything via URNs.
 
 ```yaml
 build:
@@ -592,8 +694,16 @@ build:
     # Manifest-only entry: registers IAM + plugin type (no image built)
     - manifest: manifests/foo-aas.yaml.j2
 
-    # Image entry: same manifest + DP image build
+    # Image entry: same manifest + DP image build + PyPI wheel artifact
     - manifest: manifests/foo-aas.yaml.j2
+      artifacts:
+        # Build the plugin wheel and expose it as `{{ artifacts.pypi_package }}`
+        # in the manifest (used by $metapaas.types.<slug>.package). The glob
+        # is relative to exordos.yaml's directory (../dist/ = repo root dist/).
+        - script: images/build_wheel.sh
+          name: pypi_package
+          artifacts:
+            - ../dist/*.whl
       images:
         - name: exordos-metapaas-foo-dp
           format: GEN_IMG_FORMAT_CORE=zst
@@ -603,6 +713,10 @@ build:
             disk_size: "6G"
             use_backing_file: true
 ```
+
+**File:** `exordos/images/build_wheel.sh` — a self-contained script that builds the plugin wheel into `dist/` using a local venv (prefers `uv`, falls back to `python3 -m venv`). It `cd`s to the repo root (`$SCRIPT_DIR/../..`, where `pyproject.toml` lives) and runs `python -m build --wheel`. Copy it verbatim from `exordos_observability/exordos/images/build_wheel.sh` or `metapaas_demo/exordos/images/build_wheel.sh`.
+
+The DP image `name:` (`exordos-metapaas-foo-dp`) is what the manifest's `image: "{{ images.exordos_metapaas_foo_dp }}"` resolves to — dashes in the image name become underscores in the `images.*` variable.
 
 ---
 
@@ -731,13 +845,12 @@ commands = mypy exordos_foo
 ```makefile
 SHELL := bash
 SSH_KEY    ?= ~/.ssh/id_ed25519.pub
-REPOSITORY ?= http://10.20.0.1:8080/exordos-elements
-INDEX_URL  ?= http://10.20.0.1:8080/simple/
 
 build:
-	exordos build -c exordos/exordos.yaml -i $(SSH_KEY) -f \
-		--manifest-var repository=$(REPOSITORY) \
-		--manifest-var index_url=$(INDEX_URL)
+	exordos build -c exordos/exordos.yaml -i $(SSH_KEY) -f
+
+deploy:
+	exordos deploy -e output
 
 install:
 	exordos em elements install output/manifests/foo-aas.yaml
@@ -763,6 +876,8 @@ functional:
 typecheck:
 	tox -e mypy
 ```
+
+> **No `--manifest-var` flags:** the build toolchain resolves the DP image and the PyPI wheel via URNs (`{{ images.* }}`, `{{ artifacts.* }}`), so `REPOSITORY`/`INDEX_URL` Makefile variables and `--manifest-var repository=...` / `--manifest-var index_url=...` are no longer needed. The wheel is built by `build_wheel.sh` (declared in `exordos.yaml`'s `artifacts:` block), not by a separate `make wheel` step during `make build`.
 
 ---
 
@@ -822,20 +937,36 @@ See `exordos_mail/.github/workflows/func_tests.yaml` for the full working exampl
 
 ## Step 9: Deployment & Testing Locally
 
-### Build & Serve
+### Build & Deploy (one step)
+
+The fastest local dev loop is `make build` followed by `exordos deploy`, which serves the local `output/` directory over an in-process HTTP server and installs the element directly into the current realm — no `exordos push` or published repository needed:
 
 ```bash
 cd exordos_<name>
 
-# Build DP image + manifest
+# Build DP image + manifest + PyPI wheel (wheel is built by build_wheel.sh
+# via the artifacts: block in exordos.yaml, no separate make wheel needed)
 make build
 
-# Publish wheel to local pip index
-make publish-wheel
+# Deploy the build to the current realm in one step (serves output/ locally,
+# installs directly — no push). Equivalent: exordos deploy -e output
+make deploy
+```
 
-# Install element in core
+`exordos deploy` is the recommended way to iterate during development. With `--repository <name>` it switches to push mode (push the build to a configured repository first, then install) — useful when deploying to a remote realm that can't reach your local machine. See `exordos_core/docs/app-developer-guide/deploy.md` for the full reference.
+
+### Build & Install (explicit)
+
+The two-step equivalent, useful when you want to control each phase or install from an already-pushed repository:
+
+```bash
+make build
+
+# Install element in core (from the local manifest path)
 make install
 ```
+
+> `make publish-wheel` is only needed if you want the wheel on a local pip index for ad-hoc `pip install` outside the build. The `make build` + `make deploy`/`make install` flow resolves the wheel via the `{{ artifacts.pypi_package }}` URN and does not require a published index.
 
 ### Bootstrap CI environment locally
 
@@ -857,22 +988,24 @@ tox -e py312-functional
 
 - [ ] Repo structure: `exordos/{images,manifests}/`, `etc/{exordos_metapaas,systemd}/`, `exordos_<name>/controlplane/`, `exordos_<name>/dataplane/`, `exordos_<name>/migrations/`, `exordos_<name>/tests/`
 - [ ] DP image: `dp_install.sh` (build) + `dp_bootstrap.sh` (first boot); `exordos.yaml` references both via `profile` + `script`
-- [ ] `exordos.yaml`: **two** deps — plugin package (`/opt/exordos_metapaas`) + runtime (`/opt/exordos_metapaas_runtime`); two element entries (manifest-only + manifest+image)
+- [ ] `exordos.yaml`: **two** deps — plugin package (`/opt/exordos_metapaas`) + runtime (`/opt/exordos_metapaas_runtime`); two element entries (manifest-only + manifest+image); image entry has an `artifacts:` block with `build_wheel.sh` → `pypi_package` (`../dist/*.whl`)
+- [ ] `exordos/images/build_wheel.sh`: self-contained wheel build script (copy from `metapaas_demo` or `exordos_observability`)
 - [ ] `controlplane/dm/models.py`: `ModelWithUUID` + `ModelWithProject` + `orm.SQLStorableMixin`; Version model with `TargetResourceMixin`; child resources with `_touch_parent` + `_maybe_hash_password` if salted hashes
 - [ ] `controlplane/api/controllers.py`: `PolicyBasedController` + `BaseResourceControllerPaginated`; `__policy_service_name__` + `__policy_name__` match manifest permission names
 - [ ] `field_permissions`: hides secrets (`HIDDEN`), marks read-only fields (`RO`) like `status`, `ipsv4`
 - [ ] `controlplane/api/routes.py`: route controller wiring
 - [ ] `controlplane/infra/services/builder.py`: `CoreInfraBuilder` subclass (nodes, keys, config regen)
+- [ ] `controlplane/paas/dm/models.py`: PaaS-layer `Instance` view mixing in `InstanceWithDerivativesMixin` + `DependenciesActiveReadinessMixin` with `get_readiness_dependencies()` returning `RI("<slug>_instance_iaas", self.uuid)` (see §3.1b — prevents FK-violation rollback race)
 - [ ] `controlplane/paas/services/builder.py`: `PaaSBuilder` subclass (payload assembly, DP facts sync)
 - [ ] `definition.py` (package root): `PaaSDefinition` subclass; `element_name` matches element registration name (e.g., `"foo-aas"`, **not** `"foo"`)
 - [ ] `dataplane/driver.py`: `CapabilityDriver` subclass; registered via `gcl_sdk_universal_agent` entrypoint; `dump_to_dp()` uses `_write_file_atomic` (reload only on change); `restore_from_dp()` reads real disk state (not empty defaults)
 - [ ] `migrations/`: DB migration files for all tables
 - [ ] `pyproject.toml`: two entrypoints (`exordos_metapaas_paas` + `gcl_sdk_universal_agent`); `migrations/*.py` in package-data
-- [ ] Manifest `<name>-aas.yaml.j2`: `$metapaas.types` (with correct `element_name`) + `$core.iam.permissions` + `$core.iam.permissionbinding` + `$<element_name>.types.<slug>.versions`
+- [ ] Manifest `<name>-aas.yaml.j2`: `$metapaas.types` (with correct `element_name`, `package: "{{ artifacts.pypi_package }}"`) + `$core.iam.permissions` + `$core.iam.permissionbinding` + `$<element_name>.types.<slug>.versions` (with `image: "{{ images.exordos_metapaas_<name>_dp }}"`)
 - [ ] Manifest `example_<name>.yaml.j2`: declarative example instance for testing
 - [ ] Unit tests: model fields, driver logic
 - [ ] Functional tests: full E2E with API client fixtures and DP propagation polling
-- [ ] Makefile + tox.ini: standard tooling (`build/install/wheel/test/functional/lint/typecheck`)
+- [ ] Makefile + tox.ini: standard tooling (`build/deploy/install/wheel/test/functional/lint/typecheck`); `build` target has **no** `--manifest-var` flags (URNs resolve images + wheel); `deploy` target runs `exordos deploy -e output`
 - [ ] CI workflows: `tests.yaml` (lint + unit) + `func_tests.yaml` (E2E)
 
 ---
@@ -887,9 +1020,9 @@ tox -e py312-functional
 
 4. **Hiding secrets**: Use `Permissions.HIDDEN` for passwords/tokens — they are never returned by the API. The field can still be set on CREATE/UPDATE but is stripped from all responses.
 
-5. **DP image URL**: Use `/{{ name }}/{{ version }}/images/` in the manifest (both `name` and `version` are template variables), not hardcoded paths.
+5. **DP image reference**: Use `image: "{{ images.exordos_metapaas_<name>_dp }}"` in the version catalog, where `<name>_dp` is the DP image `name:` from `exordos.yaml` with dashes → underscores. Do **not** hardcode `{{ repository }}/{{ name }}/{{ version }}/images/...` URLs — the build toolchain resolves the image via the `images.*` URN. The old `--manifest-var repository=...` Makefile flag is gone.
 
-6. **Missing `index_url`**: Leave `index_url: "{{ index_url | default('') }}"` in the manifest so PluginReconciler can find the CP wheel on private registries.
+6. **Plugin package reference**: Use `package: "{{ artifacts.pypi_package }}"` in `$metapaas.types`, backed by the `artifacts:` block in `exordos.yaml` (see Step 5). Do **not** use `package: "exordos_<name>"` + `index_url: "{{ index_url | default('') }}"` — the build toolchain builds the wheel via `build_wheel.sh` and resolves it via the `artifacts.*` URN, so `index_url` and the `--manifest-var index_url=...` Makefile flag are no longer needed. (`index_url` is still supported on the `PaaSType` model for ad-hoc named-package installs from a private index, but the recommended build flow does not use it.)
 
 7. **Version `description` field**: The version resource's `description` must contain the metapaas project UUID — this is how the core-agent version filter knows which versions belong to which project.
 
@@ -902,11 +1035,12 @@ tox -e py312-functional
 
 9. **`element_name` vs `slug` in namespace**: The version resource namespace is `$<element_name>.types.<slug>.versions`, where `element_name` comes from `PaaSDefinition.element_name` (and must match the element's registered name). If `slug = "foo"` but `element_name = "foo-aas"`, the namespace is `$foo-aas.types.foo.versions` — **not** `$foo.types.foo.versions`. A mismatch causes "Namespace was not found" when core tries to resolve the version reference.
 
-10. **pip simple index missing package subdir**: When PluginReconciler runs `pip install exordos_<name>` from your local index, it expects `<index_url>/<package-name>/index.html` to exist. If only the `.whl` file is present without the subdir+index.html, the install will 404. Create the subdir and link the wheel:
+10. **pip simple index missing package subdir** (only relevant for ad-hoc named-package installs via `index_url`): When PluginReconciler runs `pip install exordos_<name>` from a local index, it expects `<index_url>/<package-name>/index.html` to exist. If only the `.whl` file is present without the subdir+index.html, the install will 404. Create the subdir and link the wheel:
     ```bash
     mkdir -p /srv/exordos-local-repo/simple/exordos-paas-<name>
     # ... generate index.html with link to the .whl
     ```
+    The recommended build flow (`package: "{{ artifacts.pypi_package }}"`) sidesteps this entirely — the wheel is resolved via URN, not via a simple index.
 
 11. **Test isolation in functional tests**: Create a fresh instance per test session, not per test class. Use session-scoped fixtures. Clean up instances in fixture teardown.
 
@@ -934,9 +1068,21 @@ tox -e py312-functional
     `status=NEW` directly without changing `version` will result in the reconciler marking the
     plugin ACTIVE immediately (no reinstall) if the dist version already matches.
 
+16. **PaaS derivative persisted before the dataplane agent registers (FK violation)**: if the
+    PaaS-layer `Instance` model mixes in only `InstanceWithDerivativesMixin` (no readiness gate),
+    the builder can try to persist `ua_target_resources` before the DP agent has registered in
+    `ua_agents`. That hits a foreign-key violation on `ua_target_resources.agent_uuid →
+    ua_agents.uuid` and rolls back the **entire** reconciliation transaction — including any
+    child-resource work done in the same tick — leaving the instance stuck in `IN_PROGRESS`. This
+    is a **race** (depends on IaaS reaching `ACTIVE` before the first builder tick), so it can pass
+    in dev and fail on a slower stand. Fix: mix in `DependenciesActiveReadinessMixin` and implement
+    `get_readiness_dependencies()` returning `RI("<slug>_instance_iaas", self.uuid)` (see §3.1b).
+    The `RI` kind must match the infra-layer instance model's `get_resource_kind()`.
+
 ---
 
 ## Reference Implementations
 
 - **exordos_mail** (`exordos_mail`) — **primary reference**: instances + accounts, DKIM, Exim4, functional tests. First complete end-to-end example of the plugin contract. Study `driver.py` for `_write_file_atomic`/`restore_from_dp`, `models.py` for `_maybe_hash_password`/`_touch_parent`.
+- **exordos_observability** (`exordos_observability`) — two composable plugins (`victoriaaas` + `grafanaaas`) in one package; the first plugin to use `DependenciesActiveReadinessMixin` for PaaS→IaaS readiness gating (see §3.1b) and the URN-based manifest/build pattern (see Step 4 & Step 5). Study `*/controlplane/paas/dm/models.py` for the readiness mixin, and `exordos/manifests/*.yaml.j2` + `exordos/exordos.yaml` for the `images.*`/`artifacts.pypi_package` pattern.
 - **exordos_s3** — production-grade, fully featured (instances, buckets, users, policies, access keys); pending migration to the plugin contract (phase 5).

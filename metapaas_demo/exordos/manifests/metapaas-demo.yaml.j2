@@ -13,18 +13,15 @@ requirements:
 resources:
 
   # Register the demo PaaS type in metapaas. The PluginReconciler watches this
-  # resource and (pip-)installs the package at runtime on metapaas-cp. The demo
-  # plugin ships bundled inside the exordos_metapaas wheel (see
-  # [tool.setuptools.packages.find] include = metapaas_demo*), so it is already
-  # present on the CP image — registering the type is what activates its routes,
-  # migrations and agent model/filter maps.
+  # resource and (pip-)installs the package at runtime on metapaas-cp. The
+  # package is resolved from the wheel artifact built by the common build
+  # (see the `artifacts:` block in exordos.yaml) — no manual index_url or
+  # repository manifest-var needed.
   $metapaas.types:
     demo:
       name: "demo"
       element_name: "metapaas-demo"      # ← must match DemoDefinition.element_name
-      package: "exordos_metapaas"
-      version: "{{ pkg_version | default('') }}"
-      index_url: "{{ index_url | default('') }}"
+      package: "{{ artifacts.pypi_package }}"
       project_id: "4d657461-0000-0000-0000-000000000002"
 
   # Demo IAM permissions bound to the metapaas project owner role.
@@ -76,7 +73,7 @@ resources:
     demo_v1:
       name: "demo_v1"
       description: "12345678-c625-4fee-81d5-f691897b8142"
-      image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/metapaas-demo/{{ version }}/images/exordos-metapaas-demo-dp.raw.zst"
+      image: "{{ images.exordos_metapaas_demo_dp }}"
 
 exports:
   demo_v1:
