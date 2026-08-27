@@ -30,11 +30,37 @@ resources:
       email: "noreply+metapaas@exordos.com"
       password: $core.secret.passwords.$metapaas_user_password:value
 
+  # Read-only role for URN resolution: the plugin reconciler follows
+  # artifact → element → repository across all projects, so the binding
+  # is unscoped (no project) to bypass project filtering on read.
+  $core.iam.roles:
+    metapaas_repo_reader:
+      uuid: 4d657461-0000-0000-0000-000000000003
+      name: "metapaas_repo_reader"
+      description: "Read-only access to repo artifacts, elements, and repositories for MetaPaaS URN resolution"
+
+  $core.iam.permissionbinding:
+    binding_metapaas_repo_reader_artifact_read:
+      role: "$core.iam.roles.$metapaas_repo_reader:uuid"
+      permission: "37ee8a65-ca05-54b2-a603-831511c01b3c"
+    binding_metapaas_repo_reader_element_read:
+      role: "$core.iam.roles.$metapaas_repo_reader:uuid"
+      permission: "553648f2-0dbc-55bf-80d4-79a6938c0ebf"
+    binding_metapaas_repo_reader_repository_read:
+      role: "$core.iam.roles.$metapaas_repo_reader:uuid"
+      permission: "3e2c70c3-6355-531d-bb59-a5727b777d3b"
+
   $core.iam.rolebinding:
     metapaas_role_binding:
       role: "726f6c65-0000-0000-0000-000000000002"
-      user: 4d657461-0000-0000-0000-000000000001
+      user: "$core.iam.users.$metapaas_user:uuid"
       project: $core.iam.projects.$metapaas_project:uuid
+    # Unscoped binding: gives metapaas_user the repo_reader permissions
+    # on an unscoped token, bypassing project filtering so the reconciler
+    # can resolve URNs across all projects.
+    metapaas_unscoped_role_binding:
+      role: "$core.iam.roles.$metapaas_repo_reader:uuid"
+      user: "$core.iam.users.$metapaas_user:uuid"
 
   # Secret
   $core.secret.passwords:
@@ -56,7 +82,7 @@ resources:
         kind: "disks"
         disks:
           - size: 10
-            image: "{{ repository | default('https://repo.exordos.com/exordos-elements') }}/metapaas/{{ version }}/images/exordos-metapaas.raw.zst"
+            image: "{{ images.exordos_metapaas }}"
             label: root
           # Persistent data disk: the embedded control-plane DB lives here so it
           # survives root/image replacement.

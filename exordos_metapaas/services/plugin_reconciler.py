@@ -29,11 +29,15 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import subprocess
 import sys
 import typing as tp
+import uuid as sys_uuid
 
+import bazooka
 from gcl_looper.services import basic as looper_basic
+from gcl_sdk.clients.http import base as http_base
 from restalchemy.dm import filters as ra_filters
 
 from exordos_metapaas.dm import models as dm_models
@@ -71,6 +75,62 @@ print(json.dumps(slug_ver))
 class PluginReconciler(looper_basic.BasicService):
     """Reconcile desired PaaS plugins (metapaas_plugins) into pip installs."""
 
+    def __init__(
+        self,
+        core_api_base_url: str = "",
+        core_username: str = "",
+        core_password: str = "",
+    ) -> None:
+        super().__init__()
+        self._core_api_base_url = core_api_base_url
+        http = bazooka.Client()
+        auth = http_base.CoreIamAuthenticator(
+            core_api_base_url,
+            core_username,
+            core_password,
+            http_client=http,
+        )
+        self._client = http_base.CollectionBaseClient(
+            base_url=core_api_base_url,
+            http_client=http,
+            auth=auth,
+        )
+
+    def _resolve_urn(self, urn: str) -> str:
+        """Resolve a URN (e.g. ``urn:artifacts:<uuid>``) to an HTTP URI.
+
+        Queries ``/v1/repo/artifacts/`` on the Core user API, filters by
+        ``urn``, and picks the artifact from the highest-priority repository.
+        """
+        if not self._core_api_base_url:
+            raise RuntimeError("Core API is not configured — cannot resolve URNs")
+
+        artifacts = self._client.filter("/v1/repo/artifacts/", urn=urn)
+
+        if not artifacts:
+            raise ValueError(f"Artifact for URN '{urn}' not found")
+
+        if len(artifacts) == 1:
+            return artifacts[0]["uri"]
+
+        # The same URN may exist in multiple repositories. Pick the one
+        # from the highest-priority repository (higher value = more priority).
+        # The API serializes relationships as URI strings, so we follow
+        # artifact → element → repository to read the priority field.
+        def _priority(artifact):
+            element = self._client.get(
+                "/v1/repo/elements/",
+                sys_uuid.UUID(posixpath.basename(artifact["element"].rstrip("/"))),
+            )
+            repository = self._client.get(
+                "/v1/repo/repositories/",
+                sys_uuid.UUID(posixpath.basename(element["repository"].rstrip("/"))),
+            )
+            return repository.get("priority", 0)
+
+        artifact = max(artifacts, key=_priority)
+        return artifact["uri"]
+
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
@@ -87,31 +147,43 @@ class PluginReconciler(looper_basic.BasicService):
             LOG.exception("Failed to discover installed PaaS plugins")
             return {}
 
-    @staticmethod
-    def _spec(plugin) -> str:
-        if plugin.version and not _looks_like_url(plugin.package):
-            return f"{plugin.package}=={plugin.version}"
-        return plugin.package
+    def _spec(self, plugin: dm_models.PaaSType) -> str:
+        package = plugin.package
+        if _is_urn(package):
+            package = self._resolve_urn(package)
+        if plugin.version and not _looks_like_url(package):
+            return f"{package}=={plugin.version}"
+        return package
 
     @staticmethod
-    def _should_reinstall(plugin, installed_version: str) -> bool:
+    def _should_reinstall(plugin: dm_models.PaaSType, installed_version: str) -> bool:
         """Return True if the installed plugin does not match the desired spec.
 
-        For URL/whl/tar.gz packages the dist version cannot be compared against
-        a URL, so we always reinstall (triggered only when ``package`` changed
-        and ``update()`` reset the status to NEW).  For named packages with a
-        version pin we compare the dist version directly.
+        For URL/whl/tar.gz/URN packages the dist version cannot be compared
+        against a URL/URN, so we always reinstall (triggered only when
+        ``package`` changed and ``update()`` reset the status to NEW).
+        For named packages with a version pin we compare the dist version
+        directly.
         """
-        if _looks_like_url(plugin.package):
+        if _looks_like_url(plugin.package) or _is_urn(plugin.package):
             return True
         if plugin.version:
             return installed_version != plugin.version
         return False
 
     def _install(self, plugin) -> bool:
+        # Resolve the spec (may hit the Core API for URN packages) inside
+        # _install so a failure on one plugin — unreachable Core, unknown URN,
+        # network error — doesn't abort the whole reconciliation tick and
+        # block the remaining pending plugins.
+        try:
+            spec = self._spec(plugin)
+        except Exception:
+            LOG.exception("Failed to resolve install spec for plugin %s", plugin.name)
+            return False
         cmd = [
             "exordos-metapaas-install-paas",
-            self._spec(plugin),
+            spec,
             "--no-restart",
         ]
         if plugin.index_url:
@@ -180,8 +252,9 @@ class PluginReconciler(looper_basic.BasicService):
         installed_any = False
         for plugin in to_install:
             if self._install(plugin):
-                # Mark ACTIVE immediately so URL-based packages don't reinstall
-                # on the next gservice startup before routes/services reload.
+                # Mark ACTIVE immediately so URL/URN-based packages don't
+                # reinstall on the next gservice startup before routes/services
+                # reload.
                 plugin.status = STATUS_ACTIVE
                 plugin.save()
                 installed_any = True
@@ -190,6 +263,10 @@ class PluginReconciler(looper_basic.BasicService):
         if installed_any or newly_activated:
             self._signal_user_api()
             self._restart_detached()
+
+
+def _is_urn(package: str) -> bool:
+    return package.startswith("urn:")
 
 
 def _looks_like_url(package: str) -> bool:

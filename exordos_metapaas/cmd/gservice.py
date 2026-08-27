@@ -70,7 +70,11 @@ def main():
     services = [
         InfraScheduler(),
         UAgent(**core_kwargs),
-        PluginReconciler(),
+        PluginReconciler(
+            core_api_base_url=CONF.core.core_api_base_url,
+            core_username=CONF.core.core_username,
+            core_password=CONF.core.core_password,
+        ),
     ]
 
     for definition in discover_paas().values():
