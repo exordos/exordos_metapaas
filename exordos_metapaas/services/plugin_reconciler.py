@@ -32,7 +32,6 @@ import logging
 import posixpath
 import subprocess
 import sys
-import typing as tp
 import uuid as sys_uuid
 
 import bazooka
@@ -134,7 +133,7 @@ class PluginReconciler(looper_basic.BasicService):
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
-    def _installed_slugs() -> tp.Dict[str, str]:
+    def _installed_slugs() -> dict[str, str]:
         """Return {slug: dist_version} for all installed PaaS plugins.
 
         Runs in a fresh interpreter so entry points registered by a package

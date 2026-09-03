@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
 import logging
-import typing as tp
 
 from exordos_metapaas.common import constants as c
 
@@ -63,7 +62,7 @@ class PaaSDefinition:
         """Return a restalchemy ``Route`` class for ``/v1/types/<slug>/``."""
         raise NotImplementedError
 
-    def get_migrations_path(self) -> tp.Optional[str]:
+    def get_migrations_path(self) -> str | None:
         """Return the filesystem path of this plugin's migrations dir."""
         return None
 
@@ -75,7 +74,7 @@ class PaaSDefinition:
         core_password: str,
         core_api_base_url: str,
         project_id: str,
-    ) -> tp.List:
+    ) -> list:
         """Instantiate and return the control-plane builder services for this PaaS.
 
         Called by the gservice at startup (and after plugin install + restart).
@@ -86,7 +85,7 @@ class PaaSDefinition:
         """
         return []
 
-    def get_agent_models(self) -> tp.Dict[str, str]:
+    def get_agent_models(self) -> dict[str, str]:
         """core-agent ``[models]`` map: ``{subpath: "module:Model"}``.
 
         ``subpath`` is the resource path *relative to* ``types.<slug>``, with
@@ -101,7 +100,7 @@ class PaaSDefinition:
         """
         return {}
 
-    def get_agent_filters(self) -> tp.Dict[str, str]:
+    def get_agent_filters(self) -> dict[str, str]:
         """core-agent ``[filters]`` map: ``{subpath: "field"}``.
 
         Same ``subpath`` keys as :meth:`get_agent_models`. ``field`` is the

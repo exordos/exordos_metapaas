@@ -43,7 +43,7 @@ class CoreInfraBuilder(builder.CoreInfraBuilder):
         core_password: str,
         core_api_base_url: str,
         project_id: sys_uuid.UUID,
-        instance_model: tp.Type[models.DemoInstance] = models.DemoInstance,
+        instance_model: type[models.DemoInstance] = models.DemoInstance,
     ):
         super().__init__(instance_model)
         self._project_id = project_id
@@ -131,7 +131,7 @@ class CoreInfraBuilder(builder.CoreInfraBuilder):
 
         # Single-node demo: generate config for each provisioned node
         new_configs = []
-        for node_uuid_str, _ in nodeset_actual.nodes.items():
+        for node_uuid_str in nodeset_actual.nodes:
             content = DEMO_CONF_TEMPLATE.format(name=instance.name)
             config = instance._create_config(
                 sys_uuid.UUID(node_uuid_str), self._project_id, content

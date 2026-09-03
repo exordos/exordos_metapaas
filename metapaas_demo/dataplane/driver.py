@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import typing as tp
 
 from gcl_sdk.agents.universal import constants as c
 from gcl_sdk.agents.universal.drivers import meta
@@ -59,7 +60,7 @@ class DemoInstance(meta.MetaDataPlaneModel):
         default=pc.InstanceStatus.ACTIVE.value,
     )
 
-    _meta_fields = {"uuid", "name"}
+    _meta_fields: tp.ClassVar = {"uuid", "name"}
 
     def get_meta_model_fields(self) -> set[str] | None:
         return self._meta_fields
@@ -96,7 +97,7 @@ class DemoCapabilityDriver(meta.MetaFileStorageAgentDriver):
 
     DEMO_META_PATH = os.path.join(c.WORK_DIR, "demo_meta.json")
 
-    __model_map__ = {
+    __model_map__: tp.ClassVar = {
         "demo_instance_node": DemoInstance,
     }
 

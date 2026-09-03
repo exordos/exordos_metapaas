@@ -107,6 +107,8 @@ exclude = [
     "site-packages",
     "venv",
     "docs",
+    "exordos_metapaas/migrations/0000-init-plugins.py",
+    "metapaas_demo/migrations/0000-init-demo01.py",
 ]
 
 # Same as Black.

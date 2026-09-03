@@ -15,6 +15,7 @@
 import importlib
 import logging
 import signal
+import typing as tp
 
 from restalchemy.api import routes
 
@@ -148,6 +149,6 @@ class ApiEndpointRoute(routes.Route):
     """Handler for /v1/ endpoint"""
 
     __controller__ = controllers.ApiEndpointController
-    __allow_methods__ = [routes.FILTER]
+    __allow_methods__: tp.ClassVar = [routes.FILTER]
 
     types = routes.route(TypeRoute)

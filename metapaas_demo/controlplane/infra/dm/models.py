@@ -26,7 +26,7 @@ ROOT_DISK_SIZE = 6
 
 
 class DemoInstance(models.DemoInstance, ua_models.InstanceWithDerivativesMixin):
-    __derivative_model_map__ = {
+    __derivative_model_map__: tp.ClassVar = {
         "node_set": sdk_models.NodeSet,
         "node": sdk_models.Node,
         "config": sdk_models.Config,

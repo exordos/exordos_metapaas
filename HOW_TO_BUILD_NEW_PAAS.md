@@ -182,7 +182,7 @@ class FooVersion(
     models.ModelWithNameDesc,
     models.ModelWithTimestamp,
     orm.SQLStorableMixin,
-    ua_models.TargetResourceMixin,   # needed so the runtime can track this as a resource
+    ua_models.TargetResourceMixin,  # needed so the runtime can track this as a resource
 ):
     __tablename__ = "foo_versions"
 
@@ -192,7 +192,7 @@ class FooVersion(
 class FooInstance(
     models.ModelWithUUID,
     models.ModelWithNameDesc,
-    models.ModelWithProject,          # gives project_id → multitenancy
+    models.ModelWithProject,  # gives project_id → multitenancy
     models.ModelWithTimestamp,
     orm.SQLStorableMixin,
 ):
@@ -202,7 +202,9 @@ class FooInstance(
         types.Enum([s.value for s in FooStatus]),
         default=FooStatus.NEW.value,
     )
-    ipsv4 = properties.property(types.TypedList(types.String(max_length=15)), default=lambda: [])
+    ipsv4 = properties.property(
+        types.TypedList(types.String(max_length=15)), default=lambda: []
+    )
     cpu = properties.property(types.Integer(min_value=1, max_value=128))
     ram = properties.property(types.Integer(min_value=512, max_value=1024**3))
     disk_size = properties.property(types.Integer(min_value=8, max_value=1024**3))
@@ -246,9 +248,15 @@ class FooAccount(...):
 ```python
 def _maybe_hash_password(self):
     if self.password_hash and not _is_crypt_hash(self.password_hash):
-        old_hash = self.properties["password_hash"].old_value  # value before this setattr
-        if old_hash and _is_crypt_hash(old_hash) and sha512_crypt.verify(self.password_hash, old_hash):
-            self.password_hash = old_hash   # same password, keep existing hash
+        old_hash = self.properties[
+            "password_hash"
+        ].old_value  # value before this setattr
+        if (
+            old_hash
+            and _is_crypt_hash(old_hash)
+            and sha512_crypt.verify(self.password_hash, old_hash)
+        ):
+            self.password_hash = old_hash  # same password, keep existing hash
         else:
             self.password_hash = sha512_crypt.hash(self.password_hash)
 ```
@@ -290,9 +298,9 @@ class FooInstanceNode(
 
 
 class FooInstance(
-    models.FooInstance,                                   # the CP model
+    models.FooInstance,  # the CP model
     ua_models.InstanceWithDerivativesMixin,
-    ua_models.DependenciesActiveReadinessMixin,           # ← gate on IaaS ACTIVE
+    ua_models.DependenciesActiveReadinessMixin,  # ← gate on IaaS ACTIVE
 ):
     __master_model__ = sdk_models.NodeSet
     __derivative_model_map__ = {"foo_instance_node": FooInstanceNode}
@@ -365,6 +373,7 @@ from exordos_foo import models
 
 class FooController(ra_controllers.RoutesListController):
     """Entry point: /v1/types/foo/"""
+
     __TARGET_PATH__ = "/v1/types/foo/"
 
 
@@ -372,8 +381,10 @@ class FooVersionController(
     iam_controllers.PolicyBasedWithoutProjectController,  # no project scope — shared catalog
     ra_controllers.BaseResourceControllerPaginated,
 ):
-    __policy_service_name__ = "exordos_foo"   # ← must match permission name prefix in manifest
-    __policy_name__ = "foo_version"           # ← exordos_foo.foo_version.read
+    __policy_service_name__ = (
+        "exordos_foo"  # ← must match permission name prefix in manifest
+    )
+    __policy_name__ = "foo_version"  # ← exordos_foo.foo_version.read
 
     __resource__ = ra_resources.ResourceByRAModel(
         model_class=models.FooVersion,
@@ -383,10 +394,10 @@ class FooVersionController(
 
 
 class FooInstanceController(
-    iam_controllers.PolicyBasedController,      # project-scoped; checks project_id
+    iam_controllers.PolicyBasedController,  # project-scoped; checks project_id
     ra_controllers.BaseResourceControllerPaginated,
 ):
-    __policy_service_name__ = "exordos_foo"   # ← exordos_foo.foo_instance.*
+    __policy_service_name__ = "exordos_foo"  # ← exordos_foo.foo_instance.*
     __policy_name__ = "foo_instance"
 
     __resource__ = ra_resources.ResourceByRAModel(
@@ -396,8 +407,8 @@ class FooInstanceController(
         fields_permissions=field_p.FieldsPermissions(
             default=field_p.Permissions.RW,
             fields={
-                "status":  {constants.ALL: field_p.Permissions.RO},
-                "ipsv4":   {constants.ALL: field_p.Permissions.RO},
+                "status": {constants.ALL: field_p.Permissions.RO},
+                "ipsv4": {constants.ALL: field_p.Permissions.RO},
             },
         ),
     )
@@ -422,7 +433,7 @@ from exordos_foo import routes
 
 class FooDefinition(PaaSDefinition):
     slug = "foo"
-    element_name = "foo-aas"   # ← MUST match element registration name in manifest
+    element_name = "foo-aas"  # ← MUST match element registration name in manifest
 
     def get_type_route(self):
         return routes.FooRoute
@@ -455,7 +466,7 @@ class FooDefinition(PaaSDefinition):
 
     def get_agent_filters(self):
         return {
-            "versions": "description",        # versions filtered by project id in description
+            "versions": "description",  # versions filtered by project id in description
             "instances": "project_id",
         }
 ```
@@ -472,6 +483,7 @@ Three required methods:
 
 ```python
 from gcl_sdk.agents.universal.drivers import meta
+
 
 class FooInstance(meta.MetaDataPlaneModel):
     # ... property declarations ...
@@ -752,6 +764,7 @@ Test end-to-end against a live stand using the real CP/DP path. Follow the patte
 
 ```python
 import pytest
+
 
 def test_service_behaves_after_account_create(api_client, instance_uuid, dp_host):
     """Create a resource via CP API, wait for DP sync, verify on DP."""

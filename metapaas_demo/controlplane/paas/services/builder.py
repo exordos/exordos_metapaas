@@ -45,7 +45,7 @@ class PaaSBuilder(builder.PaaSBuilder):
 class DemoInstanceBuilder(PaaSBuilder):
     def __init__(
         self,
-        instance_model: tp.Type[models.DemoInstance] = models.DemoInstance,
+        instance_model: type[models.DemoInstance] = models.DemoInstance,
     ):
         super().__init__(instance_model)
 
