@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import typing as tp
+
 from gcl_sdk.agents.universal.orch_api import routes as orch_routes
 from restalchemy.api import routes
 
@@ -22,6 +24,6 @@ class ApiEndpointRoute(routes.Route):
     """Handler for /v1/ endpoint"""
 
     __controller__ = controllers.ApiEndpointController
-    __allow_methods__ = [routes.FILTER]
+    __allow_methods__: tp.ClassVar = [routes.FILTER]
 
     agents = routes.route(orch_routes.UniversalAgentsRoute)

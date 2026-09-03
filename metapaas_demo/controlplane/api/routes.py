@@ -12,6 +12,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import typing as tp
+
 from restalchemy.api import routes
 
 from metapaas_demo.controlplane.api import controllers
@@ -29,7 +31,7 @@ class DemoRoute(routes.Route):
     """Handler for /v1/types/demo/ endpoint (mounted by metapaas)."""
 
     __controller__ = controllers.DemoController
-    __allow_methods__ = [routes.FILTER]
+    __allow_methods__: tp.ClassVar = [routes.FILTER]
 
     # /v1/types/demo/instances/[<uuid>]
     instances = routes.route(DemoInstanceRoute)

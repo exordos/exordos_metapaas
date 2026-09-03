@@ -54,8 +54,8 @@ at startup and wires them in automatically.
 
 ```python
 class PaaSDefinition:
-    slug: str            # "mail" — table prefix, /v1/types/<slug>/ mount point
-    element_name: str    # "mailaas" — element name for EM kind construction
+    slug: str  # "mail" — table prefix, /v1/types/<slug>/ mount point
+    element_name: str  # "mailaas" — element name for EM kind construction
 
     def get_type_route(self) -> Route:
         """restalchemy Route for /v1/types/<slug>/ (models + controllers)."""
@@ -65,7 +65,10 @@ class PaaSDefinition:
 
     def get_builders(
         self,
-        core_username, core_password, core_api_base_url, project_id,
+        core_username,
+        core_password,
+        core_api_base_url,
+        project_id,
     ) -> list:
         """Instantiate and return CP builder services (InfraBuilder, PaaSBuilder).
         Runtime adds InfraScheduler, UAgent, PluginReconciler unconditionally.
