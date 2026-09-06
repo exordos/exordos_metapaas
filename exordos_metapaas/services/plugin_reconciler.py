@@ -32,12 +32,12 @@ import logging
 import posixpath
 import subprocess
 import sys
+import time
 import uuid as sys_uuid
 
 import bazooka
 from gcl_looper.services import basic as looper_basic
 from gcl_sdk.clients.http import base as http_base
-from restalchemy.dm import filters as ra_filters
 
 from exordos_metapaas.dm import models as dm_models
 
@@ -54,6 +54,12 @@ _RESTART_SERVICES = (
 )
 
 _USER_API_SERVICE = "exordos-metapaas-user-api"
+
+# How often to re-verify that plugins recorded as ACTIVE are still present in
+# the runtime. The check spawns a fresh interpreter, so it does not run on
+# every tick (~3s); a plugin disappearing is a boot-scale event (the venv
+# lives on the CP root disk, the DB on the persistent one).
+_VERIFY_INTERVAL_SEC = 300
 
 _DISCOVER_SNIPPET = """\
 import json
@@ -94,6 +100,10 @@ class PluginReconciler(looper_basic.BasicService):
             http_client=http,
             auth=auth,
         )
+        # Monotonic timestamp of the last runtime verification; 0.0 forces one
+        # on the first tick so a CP that came up without its plugins repairs
+        # itself immediately instead of after _VERIFY_INTERVAL_SEC.
+        self._last_verify = 0.0
 
     def _resolve_urn(self, urn: str) -> str:
         """Resolve a URN (e.g. ``urn:artifacts:<uuid>``) to an HTTP URI.
@@ -133,18 +143,22 @@ class PluginReconciler(looper_basic.BasicService):
     # -- helpers ------------------------------------------------------------
 
     @staticmethod
-    def _installed_slugs() -> dict[str, str]:
+    def _installed_slugs() -> dict[str, str] | None:
         """Return {slug: dist_version} for all installed PaaS plugins.
 
         Runs in a fresh interpreter so entry points registered by a package
         installed earlier in this same process are visible.
+
+        Returns ``None`` if discovery itself failed. An empty dict is a valid
+        answer ("nothing installed") that triggers a reinstall of every known
+        plugin, so a failure must not be reported as one.
         """
         try:
             out = subprocess.check_output([sys.executable, "-c", _DISCOVER_SNIPPET])
             return json.loads(out.decode())
         except (subprocess.CalledProcessError, ValueError):
             LOG.exception("Failed to discover installed PaaS plugins")
-            return {}
+            return None
 
     def _spec(self, plugin: dm_models.PaaSType) -> str:
         package = plugin.package
@@ -217,33 +231,54 @@ class PluginReconciler(looper_basic.BasicService):
     # -- main loop ----------------------------------------------------------
 
     def _iteration(self):
-        pending = dm_models.PaaSType.objects.get_all(
-            filters={"status": ra_filters.NE(STATUS_ACTIVE)},
-        )
-        if not pending:
+        plugins = dm_models.PaaSType.objects.get_all()
+        if not plugins:
+            return
+
+        pending = [p for p in plugins if p.status != STATUS_ACTIVE]
+
+        # ACTIVE is the recorded outcome of a past install, not proof that the
+        # package is still there: the venv lives on the CP root disk while the
+        # DB is on the persistent one, so replacing the root image wipes every
+        # runtime-installed plugin while the rows still read ACTIVE. Re-verify
+        # the runtime periodically so that state repairs itself.
+        now = time.monotonic()
+        if not pending and now - self._last_verify < _VERIFY_INTERVAL_SEC:
             return
 
         installed = self._installed_slugs()
+        if installed is None:
+            # Discovery failed — treating that as "nothing installed" would
+            # reinstall every plugin. Retry on the next tick instead.
+            return
+        self._last_verify = now
 
         to_install = []
         newly_activated = []
-        for plugin in pending:
-            if plugin.name in installed:
-                if self._should_reinstall(plugin, installed[plugin.name]):
-                    LOG.info(
-                        "Plugin %s needs upgrade: installed=%s, desired=%s",
+        for plugin in plugins:
+            if plugin.name not in installed:
+                if plugin.status == STATUS_ACTIVE:
+                    LOG.warning(
+                        "Plugin %s is ACTIVE but missing from the runtime; "
+                        "reinstalling",
                         plugin.name,
-                        installed[plugin.name],
-                        plugin.version or plugin.package,
                     )
-                    to_install.append(plugin)
-                else:
-                    plugin.status = STATUS_ACTIVE
-                    plugin.save()
-                    newly_activated.append(plugin.name)
-                    LOG.info("Plugin %s is active", plugin.name)
-            else:
                 to_install.append(plugin)
+            elif plugin.status == STATUS_ACTIVE:
+                continue
+            elif self._should_reinstall(plugin, installed[plugin.name]):
+                LOG.info(
+                    "Plugin %s needs upgrade: installed=%s, desired=%s",
+                    plugin.name,
+                    installed[plugin.name],
+                    plugin.version or plugin.package,
+                )
+                to_install.append(plugin)
+            else:
+                plugin.status = STATUS_ACTIVE
+                plugin.save()
+                newly_activated.append(plugin.name)
+                LOG.info("Plugin %s is active", plugin.name)
 
         if not to_install and not newly_activated:
             return
@@ -254,8 +289,9 @@ class PluginReconciler(looper_basic.BasicService):
                 # Mark ACTIVE immediately so URL/URN-based packages don't
                 # reinstall on the next gservice startup before routes/services
                 # reload.
-                plugin.status = STATUS_ACTIVE
-                plugin.save()
+                if plugin.status != STATUS_ACTIVE:
+                    plugin.status = STATUS_ACTIVE
+                    plugin.save()
                 installed_any = True
                 LOG.info("Plugin %s installed and marked active", plugin.name)
 

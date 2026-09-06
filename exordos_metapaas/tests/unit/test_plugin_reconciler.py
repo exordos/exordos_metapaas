@@ -12,17 +12,32 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import types
+
+from exordos_metapaas.services import plugin_reconciler
 from exordos_metapaas.services.plugin_reconciler import PluginReconciler
 from exordos_metapaas.services.plugin_reconciler import _is_urn
 from exordos_metapaas.services.plugin_reconciler import _looks_like_url
 
 
 class _FakePlugin:
-    def __init__(self, package, version="", index_url="", name="fake"):
+    def __init__(
+        self,
+        package,
+        version="",
+        index_url="",
+        name="fake",
+        status="ACTIVE",
+    ):
         self.package = package
         self.version = version
         self.index_url = index_url
         self.name = name
+        self.status = status
+        self.saved = 0
+
+    def save(self):
+        self.saved += 1
 
 
 def _make_reconciler() -> PluginReconciler:
@@ -138,3 +153,118 @@ class TestInstall:
             r, "_spec", lambda plugin: (_ for _ in ()).throw(RuntimeError("boom"))
         )
         assert r._install(_FakePlugin("urn:artifacts:abc")) is False
+
+
+def _patch_plugins(monkeypatch, plugins: list) -> None:
+    """Make ``dm_models.PaaSType.objects.get_all()`` return ``plugins``."""
+    monkeypatch.setattr(
+        plugin_reconciler,
+        "dm_models",
+        types.SimpleNamespace(
+            PaaSType=types.SimpleNamespace(
+                objects=types.SimpleNamespace(get_all=lambda **kwargs: plugins)
+            )
+        ),
+    )
+
+
+def _reconciler_for_iteration(monkeypatch, installed) -> PluginReconciler:
+    """Reconciler with discovery stubbed and the systemd side effects muted."""
+    r = _make_reconciler()
+    monkeypatch.setattr(r, "_installed_slugs", lambda: installed)
+    monkeypatch.setattr(r, "_signal_user_api", lambda: None)
+    monkeypatch.setattr(r, "_restart_detached", lambda: None)
+    return r
+
+
+def _never_install(plugin) -> bool:
+    raise AssertionError(f"must not (re)install plugin {plugin.name}")
+
+
+class TestIteration:
+    def test_active_but_missing_is_reinstalled(self, monkeypatch) -> None:
+        """The CP root disk (and its venv) can be replaced while the DB, on the
+        persistent disk, still records the plugin as ACTIVE. That must repair
+        itself instead of leaving the runtime permanently without the plugin."""
+        plugin = _FakePlugin("exordos_mail", name="mail", status="ACTIVE")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, {})
+        reinstalled: list[str] = []
+
+        def _install(p) -> bool:
+            reinstalled.append(p.name)
+            return True
+
+        monkeypatch.setattr(r, "_install", _install)
+
+        r._iteration()
+
+        assert reinstalled == ["mail"]
+
+    def test_active_and_present_is_untouched(self, monkeypatch) -> None:
+        plugin = _FakePlugin("exordos_mail", name="mail", status="ACTIVE")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, {"mail": "1.0.0"})
+        monkeypatch.setattr(r, "_install", _never_install)
+
+        r._iteration()
+
+        assert plugin.saved == 0
+
+    def test_discovery_failure_skips_tick(self, monkeypatch) -> None:
+        """A failed discovery is not "nothing installed" — reinstalling every
+        plugin on a transient error would be a stampede."""
+        plugin = _FakePlugin("exordos_mail", name="mail", status="ACTIVE")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, None)
+        monkeypatch.setattr(r, "_install", _never_install)
+
+        r._iteration()
+
+        assert r._last_verify == 0.0
+
+    def test_pending_and_present_is_marked_active(self, monkeypatch) -> None:
+        plugin = _FakePlugin("exordos_mail", name="mail", status="NEW")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, {"mail": "1.0.0"})
+        monkeypatch.setattr(r, "_install", _never_install)
+
+        r._iteration()
+
+        assert plugin.status == "ACTIVE"
+        assert plugin.saved == 1
+
+    def test_verification_is_throttled(self, monkeypatch) -> None:
+        """With nothing pending, discovery runs at most once per interval — it
+        spawns a fresh interpreter and the tick period is ~3s."""
+        plugin = _FakePlugin("exordos_mail", name="mail", status="ACTIVE")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, {"mail": "1.0.0"})
+        calls: list[int] = []
+
+        def _discover() -> dict:
+            calls.append(1)
+            return {"mail": "1.0.0"}
+
+        monkeypatch.setattr(r, "_installed_slugs", _discover)
+
+        r._iteration()
+        r._iteration()
+
+        assert len(calls) == 1
+
+    def test_pending_plugin_bypasses_throttle(self, monkeypatch) -> None:
+        plugin = _FakePlugin("exordos_mail", name="mail", status="NEW")
+        _patch_plugins(monkeypatch, [plugin])
+        r = _reconciler_for_iteration(monkeypatch, None)
+        calls: list[int] = []
+
+        def _discover() -> None:
+            calls.append(1)
+
+        monkeypatch.setattr(r, "_installed_slugs", _discover)
+
+        r._iteration()
+        r._iteration()
+
+        assert len(calls) == 2
