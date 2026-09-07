@@ -119,6 +119,43 @@ resources:
         name: "metapaas-cp"
         address: "$core.compute.nodes.$metapaas_cp:default_network:ipv4"
 
+  # Core LB endpoint
+
+  $metapaas.imports.$core_lb.backend_pools:
+    core_lb_metapaas_backend_http:
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      parent: $metapaas.imports.$core_lb:uuid
+      endpoints:
+        - kind: host
+          host: $core.compute.nodes.$metapaas_cp:default_network:ipv4
+          port: 8080
+          weight: 1
+  $metapaas.imports.$core_lb_http_vhost.routes:
+    core_lb_metapaas_route:
+      project_id: "12345678-c625-4fee-81d5-f691897b8142"
+      parent: $metapaas.imports.$core_lb_http_vhost:uuid
+      condition:
+        kind: prefix
+        value: /api/metapaas/
+        allowed_ips:
+          - 0.0.0.0/0
+        actions:
+          - kind: backend
+            pool: $core.network.lb.$core_lb.backend_pools.$core_lb_metapaas_backend_http:uuid
+            protocol:
+              kind: http
+        modifiers:
+          - kind: auto_header
+            headers:
+              - 'Host'
+              - 'X-Forwarded-For'
+              - 'X-Forwarded-Port'
+              - 'X-Forwarded-Proto'
+              - 'X-Forwarded-Prefix'
+          - kind: rewrite_url
+            regex: "^/api/metapaas/(.*)"
+            replacement: "/$1"
+
 imports:
   core_local_domain:
     element: "$core"
@@ -132,6 +169,14 @@ imports:
     element: "$core"
     kind: "resource"
     link: "$core.vs.variables.$iam_default_client_id"
+  core_lb:
+    element: "$core"
+    kind: "resource"
+    link: "$core.network.lb.$core_lb"
+  core_lb_http_vhost:
+    element: "$core"
+    kind: "resource"
+    link: "$core.network.lb.$core_lb.vhosts.$core_lb_core_http"
 
 exports:
   node:
