@@ -38,10 +38,10 @@ export PROJECT_ID="${PROJECT_ID}"
 export GC_HS256_JWKS_ENCRYPTION_KEY="${GC_HS256_JWKS_ENCRYPTION_KEY:-}"
 export AUDIENCE="${AUDIENCE:-}"
 
-# Embedded control-plane database. Password is generated locally and persisted
-# in the rendered config on the persistent data disk (never leaves the node).
+# Embedded control-plane database. The password is resolved after persistent
+# storage is mounted so an existing rendered config can retain its value.
 export GC_PG_USER="${GC_PG_USER:-metapaas}"
-export GC_PG_PASS="${GC_PG_PASS:-$(generate_secure_password)}"
+export GC_PG_PASS="${GC_PG_PASS:-}"
 export GC_PG_DB="${GC_PG_DB:-metapaas}"
 set -x
 
@@ -67,6 +67,38 @@ CORE_AGENT_CONFIG="/etc/exordos_metapaas/core_agent.conf"
 sudo mkdir -p /var/lib/exordos/exordos_metapaas/core_agent
 
 source "$GC_PATH"/.venv/bin/activate
+
+# Reuse the persisted connection password on subsequent boots. Resolving this
+# after the persistent config directory is bind-mounted prevents a newly
+# generated password from diverging from the PostgreSQL role password.
+if [[ -z "$GC_PG_PASS" && -f "$SERVICE_CONFIG" ]]; then
+    set +x
+    GC_PG_PASS=$(python3 - "$SERVICE_CONFIG" <<'PYEOF'
+import configparser
+import sys
+from urllib.parse import unquote, urlsplit
+
+config = configparser.ConfigParser()
+config.read(sys.argv[1])
+try:
+    password = urlsplit(config.get("db", "connection_url")).password
+except (configparser.Error, ValueError):
+    password = None
+if password:
+    print(unquote(password))
+PYEOF
+)
+    export GC_PG_PASS
+    set -x
+fi
+
+# Generate and persist a password only for a new installation without a
+# supplied or recoverable credential.
+if [[ -z "$GC_PG_PASS" ]]; then
+    set +x
+    export GC_PG_PASS="$(generate_secure_password)"
+    set -x
+fi
 
 # First boot only: create the embedded control-plane DB user/db.
 if [[ ! -f $SERVICE_CONFIG ]]; then
