@@ -36,7 +36,7 @@ jobs:
           exordos push -c exordos/exordos.push.yaml -t local -f --latest
   Test:
     needs: Build
-    uses: exordos/exordos_tests/.github/workflows/element_realm_test.yml@master
+    uses: exordos/exordos_ci/.github/workflows/element_realm_test.yml@master
     with:
       elements: metapaas
       version: ${{ needs.Build.outputs.version }}
