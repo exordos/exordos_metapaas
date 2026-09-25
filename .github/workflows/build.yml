@@ -40,4 +40,5 @@ jobs:
     with:
       elements: metapaas
       version: ${{ needs.Build.outputs.version }}
+      check-script: .github/scripts/check-metapaas.sh
     secrets: inherit
