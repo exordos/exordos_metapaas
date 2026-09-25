@@ -100,10 +100,12 @@ class PluginReconciler(looper_basic.BasicService):
             http_client=http,
             auth=auth,
         )
-        # Monotonic timestamp of the last runtime verification; 0.0 forces one
+        # Monotonic timestamp of the last runtime verification; -inf forces one
         # on the first tick so a CP that came up without its plugins repairs
-        # itself immediately instead of after _VERIFY_INTERVAL_SEC.
-        self._last_verify = 0.0
+        # itself immediately instead of after _VERIFY_INTERVAL_SEC. Not 0.0:
+        # monotonic() counts from boot, so right after boot it is itself below
+        # the interval and the first verification would be delayed.
+        self._last_verify = float("-inf")
 
     def _resolve_urn(self, urn: str) -> str:
         """Resolve a URN (e.g. ``urn:artifacts:<uuid>``) to an HTTP URI.
