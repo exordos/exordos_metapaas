@@ -221,7 +221,7 @@ class TestIteration:
 
         r._iteration()
 
-        assert r._last_verify == 0.0
+        assert r._last_verify == float("-inf")
 
     def test_pending_and_present_is_marked_active(self, monkeypatch) -> None:
         plugin = _FakePlugin("exordos_mail", name="mail", status="NEW")
