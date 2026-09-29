@@ -48,6 +48,8 @@ DEFAULT_CORE_AGENT_CONF = "/etc/exordos_metapaas/core_agent.conf"
 CORE_API_BASE_URL = "http://core.local.genesis-core.tech:80/api/core"
 CORE_ORCH_ENDPOINT = "http://core.local.genesis-core.tech:11011"
 CORE_STATUS_ENDPOINT = "http://core.local.genesis-core.tech:11012"
+# The IAM client that issues the tokens: its keys verify them.
+IAM_CLIENTS_ENDPOINT = CORE_API_BASE_URL + "/v1/iam/clients/"
 
 WORK_DIR = "/var/lib/exordos/exordos_metapaas"
 
@@ -120,6 +122,11 @@ def _recover_from_config(path):
         recovered["AUDIENCE"] = parser.get("iam", "audience")
     except (configparser.Error, KeyError):
         pass
+    try:
+        iam_endpoint = parser.get("iam", "iam_endpoint")
+        recovered["IAM_CLIENT_UUID"] = iam_endpoint.rstrip("/").rsplit("/", 1)[1]
+    except (configparser.Error, KeyError, IndexError):
+        pass
     return {k: v for k, v in recovered.items() if v}
 
 
@@ -132,6 +139,9 @@ def _collect_env(gservice_conf):
             "GC_HS256_JWKS_ENCRYPTION_KEY", ""
         ),
         "AUDIENCE": os.environ.get("AUDIENCE", ""),
+        "IAM_CLIENT_UUID": os.environ.get(
+            "IAM_CLIENT_UUID", "00000000-0000-0000-0000-000000000000"
+        ),
         "GC_PG_USER": os.environ.get("GC_PG_USER", "metapaas"),
         "GC_PG_DB": os.environ.get("GC_PG_DB", "metapaas"),
         "GC_PG_PASS": os.environ.get("GC_PG_PASS", ""),
@@ -141,7 +151,11 @@ def _collect_env(gservice_conf):
     # (e.g. when render_config runs from a systemd service without
     # /etc/exordos_init.txt sourced). Env vars always take precedence — only
     # fall back to the config when the env value is empty or a known default.
-    defaults = {"IAM_USER_NAME": "metapaas", "IAM_USER_PASS": "metapaas"}
+    defaults = {
+        "IAM_USER_NAME": "metapaas",
+        "IAM_USER_PASS": "metapaas",
+        "IAM_CLIENT_UUID": "00000000-0000-0000-0000-000000000000",
+    }
     for key, value in _recover_from_config(gservice_conf).items():
         if value and (not env.get(key) or env.get(key) == defaults.get(key, "")):
             env[key] = value
@@ -163,6 +177,7 @@ def render_gservice_conf(env):
         "config = logging.yaml",
         "",
         "[iam]",
+        "iam_endpoint = " + IAM_CLIENTS_ENDPOINT + env["IAM_CLIENT_UUID"],
         "hs256_jwks_decryption_key = " + env["GC_HS256_JWKS_ENCRYPTION_KEY"],
         "audience = " + env["AUDIENCE"],
         "",
