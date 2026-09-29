@@ -37,7 +37,6 @@ export IAM_USER_PASS="${IAM_USER_PASS:-exordos_metapaas}"
 export PROJECT_ID="${PROJECT_ID}"
 export GC_HS256_JWKS_ENCRYPTION_KEY="${GC_HS256_JWKS_ENCRYPTION_KEY:-}"
 export AUDIENCE="${AUDIENCE:-}"
-export IAM_CLIENT_UUID="${IAM_CLIENT_UUID:-00000000-0000-0000-0000-000000000000}"
 
 # Embedded control-plane database. The password is resolved after persistent
 # storage is mounted so an existing rendered config can retain its value.
