@@ -83,6 +83,10 @@ sudo ln -sf "$VENV_PATH/bin/exordos-metapaas-install-paas" "/usr/bin/exordos-met
 sudo ln -sf "$VENV_PATH/bin/exordos-universal-agent-db-back" "/usr/bin/exordos-universal-agent-db-back"
 sudo ln -sf "$VENV_PATH/bin/ra-apply-migration" "/usr/bin/ra-apply-migration"
 
+# On a user-api reload both worker generations listen on the same port
+# (SO_REUSEPORT): hand connections queued on a closing listener to a live one.
+echo "net.ipv4.tcp_migrate_req = 1" | sudo tee /etc/sysctl.d/90-metapaas.conf > /dev/null
+
 # Install Systemd service files
 sudo cp "$GC_PATH/etc/systemd/exordos-metapaas-user-api.service" $SYSTEMD_SERVICE_DIR
 sudo cp "$GC_PATH/etc/systemd/exordos-metapaas-status-api.service" $SYSTEMD_SERVICE_DIR
