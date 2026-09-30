@@ -46,8 +46,8 @@ LOG = logging.getLogger(__name__)
 STATUS_ACTIVE = "ACTIVE"
 
 # Services with stateful startup that must be restarted to pick up a new plugin.
-# user_api reloads routes via SIGUSR1 without restart; status_api/orch_api serve
-# gcl_sdk generic routes and need no action.
+# user_api is reloaded instead: it replaces its workers without downtime.
+# status_api/orch_api serve gcl_sdk generic routes and need no action.
 _RESTART_SERVICES = (
     "exordos-metapaas-gservice",
     "exordos-metapaas-core-agent",
@@ -212,13 +212,10 @@ class PluginReconciler(looper_basic.BasicService):
             return False
 
     @staticmethod
-    def _signal_user_api():
-        """Send SIGUSR1 to user_api workers so they reload plugin routes."""
-        LOG.info("Signaling %s to reload plugin routes (SIGUSR1)", _USER_API_SERVICE)
-        subprocess.run(
-            ["systemctl", "kill", "--kill-who=all", "-s", "SIGUSR1", _USER_API_SERVICE],
-            check=False,
-        )
+    def _reload_user_api():
+        """Replace user_api workers so they serve the installed plugin code."""
+        LOG.info("Reloading %s to load plugin code", _USER_API_SERVICE)
+        subprocess.run(["systemctl", "reload", _USER_API_SERVICE], check=False)
 
     @staticmethod
     def _restart_detached():
@@ -298,7 +295,7 @@ class PluginReconciler(looper_basic.BasicService):
                 LOG.info("Plugin %s installed and marked active", plugin.name)
 
         if installed_any or newly_activated:
-            self._signal_user_api()
+            self._reload_user_api()
             self._restart_detached()
 
 

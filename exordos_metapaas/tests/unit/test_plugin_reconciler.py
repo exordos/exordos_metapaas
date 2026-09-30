@@ -172,7 +172,7 @@ def _reconciler_for_iteration(monkeypatch, installed) -> PluginReconciler:
     """Reconciler with discovery stubbed and the systemd side effects muted."""
     r = _make_reconciler()
     monkeypatch.setattr(r, "_installed_slugs", lambda: installed)
-    monkeypatch.setattr(r, "_signal_user_api", lambda: None)
+    monkeypatch.setattr(r, "_reload_user_api", lambda: None)
     monkeypatch.setattr(r, "_restart_detached", lambda: None)
     return r
 
