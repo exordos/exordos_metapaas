@@ -15,15 +15,12 @@
 import logging
 import sys
 
-from gcl_looper.services import bjoern_service
-from gcl_looper.services import hub
 from oslo_config import cfg
 from restalchemy.common import config_opts as ra_config_opts
-from restalchemy.storage.sql import engines
 
+from exordos_metapaas.common import api_service
 from exordos_metapaas.common import config
 from exordos_metapaas.common import log as infra_log
-from exordos_metapaas.status_api.api import app
 
 api_cli_opts = [
     cfg.StrOpt(
@@ -39,6 +36,7 @@ api_cli_opts = [
     cfg.IntOpt(
         "workers",
         default=1,
+        min=1,
         help="How many http servers should be started",
     ),
 ]
@@ -47,8 +45,29 @@ api_cli_opts = [
 DOMAIN = "status_api"
 
 CONF = cfg.CONF
-CONF.register_cli_opts(api_cli_opts, DOMAIN)
+CONF.register_cli_opts(api_cli_opts + api_service.reload_opts, DOMAIN)
 ra_config_opts.register_posgresql_db_opts(CONF)
+
+
+def _build_worker(argv):
+    """Preload an API service in the generation before workers fork."""
+    from gcl_looper.services import bjoern_service
+    from restalchemy.storage.sql import engines
+
+    from exordos_metapaas.status_api.api import app
+
+    config.parse(argv)
+    infra_log.configure()
+    service = bjoern_service.BjoernService(
+        wsgi_app=app.build_wsgi_application(),
+        host=CONF[DOMAIN].bind_host,
+        port=CONF[DOMAIN].bind_port,
+        bjoern_kwargs={"reuse_port": True},
+    )
+    service.add_setup(
+        lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
+    )
+    return service
 
 
 def main():
@@ -59,34 +78,13 @@ def main():
     infra_log.configure()
     log = logging.getLogger(__name__)
 
-    engines.engine_factory.configure_postgresql_factory(CONF)
-
     log.info(
         "Start service on %s:%s",
         CONF[DOMAIN].bind_host,
         CONF[DOMAIN].bind_port,
     )
 
-    serv_hub = hub.ProcessHubService()
-
-    for _ in range(CONF[DOMAIN].workers):
-        service = bjoern_service.BjoernService(
-            wsgi_app=app.build_wsgi_application(),
-            host=CONF[DOMAIN].bind_host,
-            port=CONF[DOMAIN].bind_port,
-            bjoern_kwargs={"reuse_port": True},
-        )
-
-        service.add_setup(
-            lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
-        )
-
-        serv_hub.add_service(service)
-
-    if CONF[DOMAIN].workers > 1:
-        serv_hub.start()
-    else:
-        service.start()
+    api_service.start(_build_worker, sys.argv[1:], CONF[DOMAIN])
 
     log.info("Bye!!!")
 

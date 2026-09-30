@@ -12,7 +12,10 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from contextlib import nullcontext
+from copy import copy
 import types
+import uuid
 
 from exordos_metapaas.services import plugin_reconciler
 from exordos_metapaas.services.plugin_reconciler import PluginReconciler
@@ -29,6 +32,7 @@ class _FakePlugin:
         name="fake",
         status="ACTIVE",
     ):
+        self.uuid = uuid.uuid4()
         self.package = package
         self.version = version
         self.index_url = index_url
@@ -36,7 +40,7 @@ class _FakePlugin:
         self.status = status
         self.saved = 0
 
-    def save(self):
+    def save(self, session=None):
         self.saved += 1
 
 
@@ -156,13 +160,38 @@ class TestInstall:
 
 
 def _patch_plugins(monkeypatch, plugins: list) -> None:
-    """Make ``dm_models.PaaSType.objects.get_all()`` return ``plugins``."""
+    """Serve snapshots for discovery and allow updates to matching rows."""
+
+    def get_one_or_none(filters, session, locked):
+        assert locked
+        return next(
+            (
+                plugin
+                for plugin in plugins
+                if all(
+                    getattr(plugin, name) == clause.value
+                    for name, clause in filters.items()
+                )
+            ),
+            None,
+        )
+
+    monkeypatch.setattr(
+        plugin_reconciler,
+        "contexts",
+        types.SimpleNamespace(
+            Context=lambda: types.SimpleNamespace(session_manager=nullcontext)
+        ),
+    )
     monkeypatch.setattr(
         plugin_reconciler,
         "dm_models",
         types.SimpleNamespace(
             PaaSType=types.SimpleNamespace(
-                objects=types.SimpleNamespace(get_all=lambda **kwargs: plugins)
+                objects=types.SimpleNamespace(
+                    get_all=lambda: [copy(plugin) for plugin in plugins],
+                    get_one_or_none=get_one_or_none,
+                )
             )
         ),
     )
@@ -172,7 +201,7 @@ def _reconciler_for_iteration(monkeypatch, installed) -> PluginReconciler:
     """Reconciler with discovery stubbed and the systemd side effects muted."""
     r = _make_reconciler()
     monkeypatch.setattr(r, "_installed_slugs", lambda: installed)
-    monkeypatch.setattr(r, "_signal_user_api", lambda: None)
+    monkeypatch.setattr(r, "_reload_user_api", lambda: True)
     monkeypatch.setattr(r, "_restart_detached", lambda: None)
     return r
 
@@ -182,6 +211,45 @@ def _never_install(plugin) -> bool:
 
 
 class TestIteration:
+    def test_failed_reload_retries_staged_url_after_reconciler_restart(
+        self, monkeypatch
+    ) -> None:
+        plugin = _FakePlugin("urn:artifacts:fixture", name="fixture", status="NEW")
+        _patch_plugins(monkeypatch, [plugin])
+        reconciler = _reconciler_for_iteration(monkeypatch, {"fixture": "2.0.0"})
+        monkeypatch.setattr(reconciler, "_install", lambda p: True)
+        monkeypatch.setattr(reconciler, "_reload_user_api", lambda: False)
+
+        reconciler._iteration()
+
+        assert plugin.status == "RELOAD_PENDING"
+
+        restarted = _reconciler_for_iteration(monkeypatch, {"fixture": "2.0.0"})
+        monkeypatch.setattr(restarted, "_install", _never_install)
+        monkeypatch.setattr(restarted, "_reload_user_api", lambda: True)
+        restarted._iteration()
+
+        assert plugin.status == "ACTIVE"
+
+    def test_new_desired_version_during_reload_is_left_pending(
+        self, monkeypatch
+    ) -> None:
+        plugin = _FakePlugin("fixture", name="fixture", status="NEW", version="2.0.0")
+        _patch_plugins(monkeypatch, [plugin])
+        reconciler = _reconciler_for_iteration(monkeypatch, {"fixture": "2.0.0"})
+        monkeypatch.setattr(reconciler, "_install", _never_install)
+
+        def update_during_reload():
+            plugin.version = "3.0.0"
+            plugin.status = "NEW"
+            return True
+
+        monkeypatch.setattr(reconciler, "_reload_user_api", update_during_reload)
+        reconciler._iteration()
+
+        assert plugin.status == "NEW"
+        assert plugin.version == "3.0.0"
+
     def test_active_but_missing_is_reinstalled(self, monkeypatch) -> None:
         """The CP root disk (and its venv) can be replaced while the DB, on the
         persistent disk, still records the plugin as ACTIVE. That must repair
@@ -232,7 +300,7 @@ class TestIteration:
         r._iteration()
 
         assert plugin.status == "ACTIVE"
-        assert plugin.saved == 1
+        assert plugin.saved == 2
 
     def test_verification_is_throttled(self, monkeypatch) -> None:
         """With nothing pending, discovery runs at most once per interval — it

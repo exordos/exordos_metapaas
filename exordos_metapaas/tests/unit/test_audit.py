@@ -32,10 +32,7 @@ def test_api_starts_sender_only_when_enabled(enabled: bool) -> None:
         mock.patch.object(user_api, "CONF", conf),
         mock.patch.object(user_api.config, "parse"),
         mock.patch.object(user_api.infra_log, "configure"),
-        mock.patch.object(user_api.app, "build_wsgi_application"),
-        mock.patch.object(user_api.drivers, "HttpDriver"),
-        mock.patch.object(user_api.bjoern_service, "BjoernService"),
-        mock.patch.object(user_api.hub, "ProcessHubService") as hub,
+        mock.patch.object(user_api.api_service, "start") as start,
         mock.patch.object(
             user_api.audit_opts,
             "get_audit_delivery_config",
@@ -49,15 +46,21 @@ def test_api_starts_sender_only_when_enabled(enabled: bool) -> None:
         ) as database,
     ):
         user_api.main()
+        build.assert_not_called()
+        factory = user_api._build_audit_sender if enabled else None
+        start.assert_called_once_with(
+            user_api._build_worker,
+            user_api.sys.argv[1:],
+            conf[user_api.DOMAIN],
+            factory,
+        )
         if enabled:
-            sender = build.return_value
-            hub.return_value.add_service.assert_any_call(sender)
+            sender = factory(user_api.sys.argv[1:])
+            build.assert_called_once_with(conf=conf, iter_min_period=3)
+            assert sender is build.return_value
             database.assert_not_called()
             sender.add_setup.call_args.args[0]()
             database.assert_called_once_with(conf=conf)
-        else:
-            build.assert_not_called()
-        hub.return_value.start.assert_called_once()
 
 
 def test_optional_manifest_config_and_token_scope(tmp_path: Path) -> None:

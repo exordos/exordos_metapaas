@@ -102,6 +102,43 @@ actual services (RustFS, Postfix, PostgreSQL, ...)
 
 ## Development
 
+### API reload
+
+All three APIs use a supervisor that preloads a fresh generation and forks its
+workers. `systemctl reload` waits for the replacement result. In development,
+send SIGHUP directly or enable the Python source watcher.
+The reload supervisor requires `gcl_looper` 1.3.2 or newer. Install the
+published dependency in the development environment:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python -e '.[dev]'
+.venv/bin/exordos-metapaas-user-api --config-file ./dev.conf --user_api-autoreload
+```
+
+Autoreload is disabled by default. Enable it to watch local application sources
+and installed editable projects (including SDKs and lazily imported plugins):
+
+```ini
+[user_api]
+workers = 1
+autoreload = true
+```
+
+Use the same options under `[status_api]` or `[orch_api]` for those services.
+The watcher in `ReloadableProcessHubService` polls `.py` timestamps with
+nanosecond precision once per second,
+including on container mounts. No source paths are required. Install plugins in
+editable mode so discovery includes their repositories and replacement generations
+import the edited code. Use `reload-dirs` only for additional source directories;
+hidden directories, virtual environments and build outputs are skipped.
+A failed replacement leaves the current generation serving; correcting the source
+triggers another attempt. Watch settings are read at startup; restart the supervisor
+after changing them. The watcher uses only the standard library and adds no
+threads or processes. A production wheel requires a published supervisor-enabled
+`gcl_looper` satisfying the dependency bound; uv source overrides are not embedded
+in wheels.
+
 ### Unit Tests
 
 ```bash

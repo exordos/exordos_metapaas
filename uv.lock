@@ -540,7 +540,7 @@ name = "exceptiongroup"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/50/79/66800aadf48771f6b62f7eb014e352e5d06856655206165d775e675a02c9/exceptiongroup-1.3.1.tar.gz", hash = "sha256:8b412432c6055b0b7d14c310000ae93352ed6754f70fa8f7c34141f91c4e3219", size = 30371, upload-time = "2025-11-21T23:01:54.787Z" }
 wheels = [
@@ -585,7 +585,7 @@ requires-dist = [
     { name = "bjoern", specifier = ">=3.2.2" },
     { name = "coverage", marker = "extra == 'test'", specifier = ">=4.0" },
     { name = "gcl-iam", specifier = ">=1.4.0,<2.0.0" },
-    { name = "gcl-looper", specifier = ">=1.2.3,<2.0.0" },
+    { name = "gcl-looper", specifier = ">=1.3.2,<2.0.0" },
     { name = "gcl-sdk", specifier = ">=3.7.7,<4.0.0" },
     { name = "mock", marker = "extra == 'test'", specifier = ">=3.0.5,<6.0.0" },
     { name = "mypy", marker = "extra == 'mypy'" },
@@ -629,16 +629,16 @@ wheels = [
 
 [[package]]
 name = "gcl-looper"
-version = "1.3.0"
+version = "1.3.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "importlib-metadata" },
     { name = "oslo-config" },
     { name = "setuptools" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/79/8061fe15bdb1d10f5e60fc1d781fec31533c8fc7c2253b256fdfad9c49b0/gcl_looper-1.3.0.tar.gz", hash = "sha256:45fdd0837067c45d9e85c8bcf5482cc6f0535b39995ae35920e371c7e79bd660", size = 148756, upload-time = "2026-09-04T09:08:46.753Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/a6/256bf39b80cf2fab72fa3b1c7f6bf0176410fd6b86e9d1e9147d45e5afdd/gcl_looper-1.3.2.tar.gz", hash = "sha256:a0b4fcc57e3ee04baa99f201bdd0fe2d4df4b9426ec005e3a5ca50698aae03b7", size = 177664, upload-time = "2026-11-24T12:24:58.078Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/a2/8598d05e07cdbe6859c1e21dde080cce5b078df05c80aa9835fbc53de6fc/gcl_looper-1.3.0-py3-none-any.whl", hash = "sha256:8a223d75ba44eecb03760ce3eb7211dce45f411d6aceb47855bce4413c6cae36", size = 41869, upload-time = "2026-09-04T09:08:45.293Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/cf/74865e625da90d3a116cdbf2dce902b3b5091f6a7e8f4dfc565cb5fdc07d/gcl_looper-1.3.2-py3-none-any.whl", hash = "sha256:a33891194703d2da1849b60956a50bc6e4b3378f20691eff802a9308297a4c0e", size = 73375, upload-time = "2026-11-24T12:24:56.585Z" },
 ]
 
 [[package]]
