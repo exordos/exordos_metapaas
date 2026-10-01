@@ -48,6 +48,9 @@ DEFAULT_CORE_AGENT_CONF = "/etc/exordos_metapaas/core_agent.conf"
 CORE_API_BASE_URL = "http://core.local.genesis-core.tech:80/api/core"
 CORE_ORCH_ENDPOINT = "http://core.local.genesis-core.tech:11011"
 CORE_STATUS_ENDPOINT = "http://core.local.genesis-core.tech:11012"
+# The core LB routes clients/default to the installation's default IAM client,
+# which issues the tokens: its keys verify them.
+IAM_ENDPOINT = CORE_API_BASE_URL + "/v1/iam/clients/default"
 
 WORK_DIR = "/var/lib/exordos/exordos_metapaas"
 
@@ -163,6 +166,7 @@ def render_gservice_conf(env):
         "config = logging.yaml",
         "",
         "[iam]",
+        "iam_endpoint = " + IAM_ENDPOINT,
         "hs256_jwks_decryption_key = " + env["GC_HS256_JWKS_ENCRYPTION_KEY"],
         "audience = " + env["AUDIENCE"],
         "",
