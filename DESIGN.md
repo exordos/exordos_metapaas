@@ -109,10 +109,18 @@ one migration, IAM section in the PaaS element manifest.
 
 ### user_api (`mp-user-api`)
 
-Hosts `/v1/types/` with **dynamic route mounting**. On first request, `TypeRoute` calls
-`discover_paas()` and `setattr`s each plugin's route onto itself; stale slugs are
-`delattr`d. A `SIGUSR1` handler invalidates the cache so `install_paas` can trigger a
-live route reload without a process restart.
+Hosts `/v1/types/` with **dynamic route mounting**. On first access, `TypeRoute` calls
+`discover_paas()` and `setattr`s each plugin's route onto itself.
+
+A running Python process can't swap a plugin package it has already imported, so an
+installed or upgraded plugin goes live by replacing the workers: `systemctl reload`
+(SIGHUP to gcl_looper's `ReloadableProcessHubService`) spawns a new generation of
+workers in fresh interpreters, waits until they listen, then lets the old ones drain.
+Both generations share the port via `SO_REUSEPORT`; the CP image sets
+`net.ipv4.tcp_migrate_req=1` so connections queued on a closing listener are not reset.
+A new generation that fails to start is dropped and the old one keeps serving. Plugin
+migrations must stay compatible with the previous release: old workers drain on the new
+schema.
 
 ```
 /v1/
@@ -139,8 +147,9 @@ Watches `metapaas_paas_types` for rows with `status != ACTIVE`. For each:
 1. Checks if the slug is already pip-installed (via a fresh subprocess).
 2. If missing or version mismatch: runs `exordos-metapaas-install-paas` (no-restart mode).
 3. Marks `status = ACTIVE`.
-4. After all installs: sends SIGUSR1 to user_api workers + detached restart of gservice and
-   core-agent via a transient systemd unit (so gservice restart doesn't kill itself).
+4. After all installs: reloads user_api (zero-downtime worker replacement) + detached
+   restart of gservice and core-agent via a transient systemd unit (so gservice restart
+   doesn't kill itself).
 
 `PaaSType.update()` resets `status = NEW` when `version` or `package` changes — triggering
 the next reconciliation cycle.
@@ -161,7 +170,7 @@ password and project id are recovered from an existing config when env vars are 
 
 Imperative install primitive (also called by PluginReconciler):
 ```
-pip install <spec>  →  apply plugin migrations  →  render_config  →  SIGUSR1 + restart
+pip install <spec>  →  apply plugin migrations  →  render_config  →  reload user_api + restart
 ```
 Accepts pip spec (name==version, path, URL). `--no-restart` flag for staging multiple
 installs before a single restart.

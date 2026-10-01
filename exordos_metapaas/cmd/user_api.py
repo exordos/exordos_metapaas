@@ -12,6 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import functools
 import logging
 import sys
 
@@ -54,6 +55,32 @@ ra_config_opts.register_posgresql_db_opts(CONF)
 iam_opts.register_iam_cli_opts(CONF)
 
 
+def _build_worker(argv):
+    """Build one API worker; runs in a fresh interpreter per worker.
+
+    Plugins are imported here, so a reload (SIGHUP) serves the plugin code
+    currently installed, not the one the service started with.
+    """
+    config.parse(argv)
+    infra_log.configure()
+
+    iam_driver = drivers.HttpDriver(
+        CONF.iam.iam_endpoint,
+        CONF.iam.audience,
+        CONF.iam.hs256_jwks_decryption_key,
+    )
+    service = bjoern_service.BjoernService(
+        wsgi_app=app.build_wsgi_application(iam_driver),
+        host=CONF[DOMAIN].bind_host,
+        port=CONF[DOMAIN].bind_port,
+        bjoern_kwargs={"reuse_port": True},
+    )
+    service.add_setup(
+        lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
+    )
+    return service
+
+
 def main():
     # Parse config
     config.parse(sys.argv[1:])
@@ -68,26 +95,9 @@ def main():
         CONF[DOMAIN].bind_port,
     )
 
-    service_hub = hub.ProcessHubService()
-    iam_driver = drivers.HttpDriver(
-        CONF.iam.iam_endpoint,
-        CONF.iam.audience,
-        CONF.iam.hs256_jwks_decryption_key,
-    )
-
+    service_hub = hub.ReloadableProcessHubService()
     for _ in range(CONF[DOMAIN].workers):
-        service = bjoern_service.BjoernService(
-            wsgi_app=app.build_wsgi_application(iam_driver),
-            host=CONF[DOMAIN].bind_host,
-            port=CONF[DOMAIN].bind_port,
-            bjoern_kwargs={"reuse_port": True},
-        )
-
-        service.add_setup(
-            lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
-        )
-
-        service_hub.add_service(service)
+        service_hub.add_service_factory(functools.partial(_build_worker, sys.argv[1:]))
 
     service_hub.start()
 

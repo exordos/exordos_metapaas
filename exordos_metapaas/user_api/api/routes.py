@@ -12,9 +12,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-import importlib
 import logging
-import signal
 import typing as tp
 
 from restalchemy.api import routes
@@ -27,50 +25,32 @@ LOG = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Plugin route cache
 #
-# Populated on first request and held forever. Cleared to None by
-# invalidate_plugin_cache() — called from a SIGUSR1 handler, which
-# install-paas sends after a pip install so the running workers reload
-# routes without a full process restart.
+# Populated on first access and held for the life of the worker. A plugin
+# installed or upgraded later is picked up by replacing the workers (the hub
+# spawns fresh interpreters on reload), never by re-importing in place: a
+# Python process can't swap an already imported plugin package.
 #
-# setattr/delattr on TypeRoute is required in addition to the dict cache:
+# setattr on TypeRoute is required in addition to the dict cache:
 # restalchemy's RoutesListController._get_target_route traverses the route
-# tree via plain getattr(), bypassing our get_route() override. We keep both
-# in sync: load → setattr; invalidate+reload → delattr stale, setattr fresh.
+# tree via plain getattr(), bypassing our get_route() override.
 # ---------------------------------------------------------------------------
 
 _plugin_cache: dict | None = None  # {slug: route_class}
-_live_slugs: frozenset = frozenset()  # slugs currently setattr'd on TypeRoute
 _loading: bool = False  # re-entrancy guard: importlib.metadata iterates sys.meta_path
 # during entry_points(), which can trigger is_route() before
 # _load_plugin_cache() returns; return {} instead of recursing.
 
 
 def _load_plugin_cache() -> dict:
-    """Re-discover installed PaaS plugins, update TypeRoute class attrs, return cache.
-
-    importlib.invalidate_caches() is called first so a package installed by
-    another process (install-paas) is visible without a process restart.
-    """
-    global _live_slugs
-    importlib.invalidate_caches()
+    """Discover installed PaaS plugins, set TypeRoute class attrs, return cache."""
     result = {}
-    new_slugs: set[str] = set()
 
     for slug, definition in discover_paas().items():
         route_class = routes.route(definition.get_type_route())
         setattr(TypeRoute, slug, route_class)
-        new_slugs.add(slug)
         result[slug] = route_class
         LOG.info("Loaded PaaS route /v1/types/%s/", slug)
 
-    # Remove class attrs for plugins that are no longer installed.
-    for stale in _live_slugs - new_slugs:
-        try:
-            delattr(TypeRoute, stale)
-        except AttributeError:
-            pass
-
-    _live_slugs = frozenset(new_slugs)
     # Lazy import: app.py imports this module at top level, so importing it
     # here would be circular at load time — but by call time it's fully loaded.
     from restalchemy.api import resources as ra_resources
@@ -97,20 +77,6 @@ def _get_plugin_cache() -> dict:
     return _plugin_cache
 
 
-def invalidate_plugin_cache() -> None:
-    """Drop the cached plugin map; next request rebuilds it from entry points."""
-    global _plugin_cache
-    _plugin_cache = None
-    LOG.info("PaaS plugin cache invalidated; routes reload on next request")
-
-
-def _sigusr1_handler(signum, frame):
-    invalidate_plugin_cache()
-
-
-signal.signal(signal.SIGUSR1, _sigusr1_handler)
-
-
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -120,10 +86,8 @@ class TypeRoute(routes.Route):
     """Handler for /v1/types/ — the metapaas PaaS type registry.
 
     Supports full CRUD for PaaSType resources (em_metapaas_types db-back agent
-    reconciles them here). PaaS plugin API sub-routes are served dynamically:
-    the plugin cache is built on first access and replaced after SIGUSR1
-    (sent by install-paas after a pip install), so no process restart is
-    needed when a new PaaS plugin is added.
+    reconciles them here). PaaS plugin API sub-routes are mounted from the
+    plugin cache, built on first access.
     """
 
     __controller__ = controllers.PaaSTypeController

@@ -9,6 +9,10 @@ RestartSec=5s
 KillSignal=SIGINT
 ExecStartPre=/bin/sleep 2
 ExecStart=exordos-metapaas-user-api --config-file /etc/exordos_metapaas/exordos_metapaas.conf
+# Replaces the workers without downtime, e.g. to load an upgraded plugin
+ExecReload=/bin/kill -HUP $MAINPID
+# A reload that lands before the service installs its handler kills it
+RestartForceExitStatus=SIGHUP
 
 [Install]
 WantedBy=multi-user.target
