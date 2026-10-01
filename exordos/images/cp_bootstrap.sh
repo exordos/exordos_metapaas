@@ -54,7 +54,8 @@ prepare_persistent_disk "$PERSISTENT_DISK" "$PERSISTENT_MOUNT"
 if [[ -n "$PERSISTENT_DISK" ]]; then
     # Migrate logs first, some processes may keep writing to root until reboot
     migrate_to_persistent_restart "/var/log" "${PERSISTENT_MOUNT}/var/log" "systemd-journald rsyslog"
-    migrate_to_persistent_stop_start "/var/lib/postgresql" "${PERSISTENT_MOUNT}/var/lib/postgresql" "postgresql@${PG_VERSION}-main"
+    sudo chown -R postgres:postgres /var/log/postgresql
+    migrate_to_persistent_stop_start "/var/lib/postgresql" "${PERSISTENT_MOUNT}/var/lib/postgresql" "postgresql@${PG_VERSION}-main" "postgres" "postgres"
     mkdir -p /var/lib/exordos/exordos_metapaas
     migrate_to_persistent "/var/lib/exordos/exordos_metapaas" "${PERSISTENT_MOUNT}/var/lib/exordos/exordos_metapaas"
     migrate_to_persistent "/etc/exordos_metapaas" "${PERSISTENT_MOUNT}/etc/exordos_metapaas"
