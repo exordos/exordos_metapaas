@@ -35,6 +35,10 @@ build:
   elements:
     # The metapaas control-plane image (single image hosting all PaaS plugins)
     - manifest: manifests/metapaas.yaml.j2
+      artifacts:
+        - script: images/build_openapi_spec.sh
+          artifacts:
+            - ../docs/openapi/openapi_user.yaml
       images:
       - name: exordos-metapaas
         format: GEN_IMG_FORMAT_CORE=zst
