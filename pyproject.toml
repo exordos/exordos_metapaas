@@ -61,6 +61,7 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools_scm]
 
 [project.scripts]
+exordos-metapaas-openapi-spec = "exordos_metapaas.cmd.openapi_spec:main"
 exordos-metapaas-user-api = "exordos_metapaas.cmd.user_api:main"
 exordos-metapaas-status-api = "exordos_metapaas.cmd.status_api:main"
 exordos-metapaas-orch-api = "exordos_metapaas.cmd.orch_api:main"
