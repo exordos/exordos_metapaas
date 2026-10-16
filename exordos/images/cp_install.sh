@@ -57,7 +57,7 @@ fi
 # Install exordos metapaas configuration. The gservice + core-agent configs are
 # generated at boot by exordos-metapaas-render-config from the PaaS registry
 # (see cp_bootstrap.sh); only static assets are baked in here.
-sudo mkdir -p $GC_CFG_DIR
+sudo mkdir -p $GC_CFG_DIR/exordos_metapaas.d
 sudo cp "$GC_PATH/etc/exordos_metapaas/logging.yaml" $GC_CFG_DIR/
 sudo cp "$GC_PATH/exordos/images/cp_bootstrap.sh" $BOOTSTRAP_PATH/0100-metapaas-bootstrap.sh
 sudo chmod +x $BOOTSTRAP_PATH/0100-metapaas-bootstrap.sh

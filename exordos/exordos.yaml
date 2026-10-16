@@ -33,6 +33,7 @@ build:
 
   # List of elements in the project
   elements:
+    - manifest: manifests/metapaas_audit.yaml.j2
     # The metapaas control-plane image (single image hosting all PaaS plugins)
     - manifest: manifests/metapaas.yaml.j2
       artifacts:
