@@ -63,6 +63,8 @@ if [[ -n "$PERSISTENT_DISK" ]]; then
 fi
 
 # --- Database user/db + service config --------------------------------------
+sudo mkdir -p /etc/exordos_metapaas/exordos_metapaas.d
+
 CORE_AGENT_CONFIG="/etc/exordos_metapaas/core_agent.conf"
 sudo mkdir -p /var/lib/exordos/exordos_metapaas/core_agent
 
