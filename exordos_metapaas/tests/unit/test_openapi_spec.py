@@ -71,7 +71,12 @@ def test_main_writes_spec_without_changing_description_text(tmp_path: Path) -> N
 def test_element_build_generates_executable_openapi_artifact() -> None:
     root = Path(__file__).parents[3]
     config = yaml.safe_load((root / "exordos/exordos.yaml").read_text())
-    artifact = config["build"]["elements"][0]["artifacts"][0]
+    (element,) = (
+        element
+        for element in config["build"]["elements"]
+        if element["manifest"] == "manifests/metapaas.yaml.j2"
+    )
+    artifact = element["artifacts"][0]
     script = root / "exordos" / artifact["script"]
     assert script.is_file()
     assert os.access(script, os.X_OK)
