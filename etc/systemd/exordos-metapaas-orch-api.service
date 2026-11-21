@@ -3,12 +3,16 @@ Description=Exordos MetaPaaS Orch API
 After=network-online.target postgresql.service
 
 [Service]
-TimeoutStopSec=5
+TimeoutStopSec=35
 Restart=on-failure
 RestartSec=5s
-KillSignal=SIGINT
+KillMode=mixed
+KillSignal=SIGTERM
 ExecStartPre=/bin/sleep 2
 ExecStart=exordos-metapaas-orch-api --config-file /etc/exordos_metapaas/exordos_metapaas.conf --config-dir /etc/exordos_metapaas/exordos_metapaas.d
+
+ExecReload=/bin/kill -HUP $MAINPID
+RestartForceExitStatus=SIGHUP
 
 [Install]
 WantedBy=multi-user.target

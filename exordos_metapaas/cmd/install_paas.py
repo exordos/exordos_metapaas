@@ -46,15 +46,14 @@ GSERVICE_CONF = "/etc/exordos_metapaas/exordos_metapaas.conf"
 CORE_AGENT_CONF = "/etc/exordos_metapaas/core_agent.conf"
 
 # Services with stateful startup (builder lists, config read at boot) that must
-# be restarted to pick up a new plugin. user_api reloads routes via SIGUSR1
-# without restart; status_api/orch_api serve gcl_sdk generic routes and need
-# no action at all.
+# be restarted to pick up a new plugin. user_api is reloaded instead: it
+# replaces its workers without downtime. status_api/orch_api serve gcl_sdk
+# generic routes and need no action at all.
 _RESTART_SERVICES = (
     "exordos-metapaas-gservice",
     "exordos-metapaas-core-agent",
 )
 
-# user_api workers reload their plugin route cache on SIGUSR1 without restart.
 _USER_API_SERVICE = "exordos-metapaas-user-api"
 
 # Snippet run in a fresh interpreter so it sees entry points registered by a
@@ -104,13 +103,10 @@ def _render_config():
     )
 
 
-def _signal_user_api():
-    """Send SIGUSR1 to all user_api workers so they reload plugin routes."""
-    LOG.info("Signaling %s to reload plugin routes (SIGUSR1)", _USER_API_SERVICE)
-    subprocess.run(
-        ["systemctl", "kill", "--kill-who=all", "-s", "SIGUSR1", _USER_API_SERVICE],
-        check=False,
-    )
+def _reload_user_api():
+    """Replace user_api workers so they serve the installed plugin code."""
+    LOG.info("Reloading %s to load plugin code", _USER_API_SERVICE)
+    subprocess.run(["systemctl", "reload", _USER_API_SERVICE], check=False)
 
 
 def _restart_services():
@@ -161,7 +157,7 @@ def main():
     if args.no_restart:
         LOG.info("Skipping service restart (--no-restart).")
     else:
-        _signal_user_api()
+        _reload_user_api()
         _restart_services()
 
     LOG.info("PaaS install complete.")

@@ -3,12 +3,17 @@ Description=Exordos MetaPaaS User API
 After=network-online.target postgresql.service
 
 [Service]
-TimeoutStopSec=5
+TimeoutStopSec=35
 Restart=on-failure
 RestartSec=5s
-KillSignal=SIGINT
+KillMode=mixed
+KillSignal=SIGTERM
 ExecStartPre=/bin/sleep 2
 ExecStart=exordos-metapaas-user-api --config-file /etc/exordos_metapaas/exordos_metapaas.conf --config-dir /etc/exordos_metapaas/exordos_metapaas.d
+# Replaces the workers without downtime, e.g. to load an upgraded plugin
+ExecReload=/bin/kill -HUP $MAINPID
+# A reload that lands before the service installs its handler kills it
+RestartForceExitStatus=SIGHUP
 
 [Install]
 WantedBy=multi-user.target

@@ -15,19 +15,16 @@
 import logging
 import sys
 
-from gcl_iam import drivers
 from gcl_iam import opts as iam_opts
-from gcl_looper.services import bjoern_service
-from gcl_looper.services import hub
 from gcl_sdk.audit import opts as audit_opts
 from gcl_sdk.audit.services import senders as audit_senders
 from oslo_config import cfg
 from restalchemy.common import config_opts as ra_config_opts
 from restalchemy.storage.sql import engines
 
+from exordos_metapaas.common import api_service
 from exordos_metapaas.common import config
 from exordos_metapaas.common import log as infra_log
-from exordos_metapaas.user_api.api import app
 
 api_cli_opts = [
     cfg.StrOpt(
@@ -43,6 +40,7 @@ api_cli_opts = [
     cfg.IntOpt(
         "workers",
         default=1,
+        min=1,
         help="How many http servers should be started",
     ),
 ]
@@ -51,10 +49,38 @@ api_cli_opts = [
 DOMAIN = "user_api"
 
 CONF = cfg.CONF
-CONF.register_cli_opts(api_cli_opts, DOMAIN)
+CONF.register_cli_opts(api_cli_opts + api_service.reload_opts, DOMAIN)
 ra_config_opts.register_posgresql_db_opts(CONF)
 iam_opts.register_iam_cli_opts(CONF)
 audit_opts.register_audit_delivery_opts(CONF)
+
+
+def _build_worker(argv):
+    """Preload an API service in the generation before workers fork."""
+    from gcl_iam import drivers
+    from gcl_looper.services import bjoern_service
+    from restalchemy.storage.sql import engines
+
+    from exordos_metapaas.user_api.api import app
+
+    config.parse(argv)
+    infra_log.configure()
+
+    iam_driver = drivers.HttpDriver(
+        CONF.iam.iam_endpoint,
+        CONF.iam.audience,
+        CONF.iam.hs256_jwks_decryption_key,
+    )
+    service = bjoern_service.BjoernService(
+        wsgi_app=app.build_wsgi_application(iam_driver),
+        host=CONF[DOMAIN].bind_host,
+        port=CONF[DOMAIN].bind_port,
+        bjoern_kwargs={"reuse_port": True},
+    )
+    service.add_setup(
+        lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
+    )
+    return service
 
 
 def main():
@@ -71,27 +97,7 @@ def main():
         CONF[DOMAIN].bind_port,
     )
 
-    service_hub = hub.ProcessHubService()
-    iam_driver = drivers.HttpDriver(
-        CONF.iam.iam_endpoint,
-        CONF.iam.audience,
-        CONF.iam.hs256_jwks_decryption_key,
-    )
-
-    for _ in range(CONF[DOMAIN].workers):
-        service = bjoern_service.BjoernService(
-            wsgi_app=app.build_wsgi_application(iam_driver),
-            host=CONF[DOMAIN].bind_host,
-            port=CONF[DOMAIN].bind_port,
-            bjoern_kwargs={"reuse_port": True},
-        )
-
-        service.add_setup(
-            lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
-        )
-
-        service_hub.add_service(service)
-
+    extra_services = []
     if audit_opts.get_audit_delivery_config(CONF).enabled:
         audit_sender = audit_senders.AuditSenderService.build_from_config(
             conf=CONF,
@@ -100,9 +106,9 @@ def main():
         audit_sender.add_setup(
             lambda: engines.engine_factory.configure_postgresql_factory(conf=CONF)
         )
-        service_hub.add_service(audit_sender)
+        extra_services.append(audit_sender)
 
-    service_hub.start()
+    api_service.start(_build_worker, sys.argv[1:], CONF[DOMAIN], extra_services)
 
     log.info("Bye!!!")
 
