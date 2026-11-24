@@ -38,16 +38,19 @@ import uuid as sys_uuid
 import bazooka
 from gcl_looper.services import basic as looper_basic
 from gcl_sdk.clients.http import base as http_base
+from restalchemy.common import contexts
+from restalchemy.dm import filters
 
 from exordos_metapaas.dm import models as dm_models
 
 LOG = logging.getLogger(__name__)
 
 STATUS_ACTIVE = "ACTIVE"
+STATUS_RELOAD_PENDING = "RELOAD_PENDING"
 
 # Services with stateful startup that must be restarted to pick up a new plugin.
-# user_api reloads routes via SIGUSR1 without restart; status_api/orch_api serve
-# gcl_sdk generic routes and need no action.
+# user_api is reloaded instead: it replaces its workers without downtime.
+# status_api/orch_api serve gcl_sdk generic routes and need no action.
 _RESTART_SERVICES = (
     "exordos-metapaas-gservice",
     "exordos-metapaas-core-agent",
@@ -175,13 +178,13 @@ class PluginReconciler(looper_basic.BasicService):
         """Return True if the installed plugin does not match the desired spec.
 
         For URL/whl/tar.gz/URN packages the dist version cannot be compared
-        against a URL/URN, so we always reinstall (triggered only when
-        ``package`` changed and ``update()`` reset the status to NEW).
+        against a URL/URN. RELOAD_PENDING records a completed install of the
+        desired package, so a failed reload can be retried on its own.
         For named packages with a version pin we compare the dist version
         directly.
         """
         if _looks_like_url(plugin.package) or _is_urn(plugin.package):
-            return True
+            return plugin.status != STATUS_RELOAD_PENDING
         if plugin.version:
             return installed_version != plugin.version
         return False
@@ -212,13 +215,40 @@ class PluginReconciler(looper_basic.BasicService):
             return False
 
     @staticmethod
-    def _signal_user_api():
-        """Send SIGUSR1 to user_api workers so they reload plugin routes."""
-        LOG.info("Signaling %s to reload plugin routes (SIGUSR1)", _USER_API_SERVICE)
-        subprocess.run(
-            ["systemctl", "kill", "--kill-who=all", "-s", "SIGUSR1", _USER_API_SERVICE],
-            check=False,
-        )
+    def _reload_user_api() -> bool:
+        """Replace user_api workers so they serve the installed plugin code."""
+        LOG.info("Reloading %s to load plugin code", _USER_API_SERVICE)
+        try:
+            subprocess.check_call(["systemctl", "reload", _USER_API_SERVICE])
+        except subprocess.CalledProcessError:
+            LOG.exception("User API reload failed; will retry")
+            return False
+        return True
+
+    @staticmethod
+    def _transition_status(plugin: dm_models.PaaSType, status: str) -> bool:
+        if plugin.status == status:
+            return True
+
+        # The desired package can change while installation or reload runs.
+        with contexts.Context().session_manager() as session:
+            current = dm_models.PaaSType.objects.get_one_or_none(
+                filters={
+                    "uuid": filters.EQ(plugin.uuid),
+                    "name": filters.EQ(plugin.name),
+                    "package": filters.EQ(plugin.package),
+                    "version": filters.EQ(plugin.version),
+                    "status": filters.EQ(plugin.status),
+                },
+                session=session,
+                locked=True,
+            )
+            if current is None:
+                return False
+            current.status = status
+            current.save(session=session)
+        plugin.status = status
+        return True
 
     @staticmethod
     def _restart_detached():
@@ -256,7 +286,7 @@ class PluginReconciler(looper_basic.BasicService):
         self._last_verify = now
 
         to_install = []
-        newly_activated = []
+        to_reload = []
         for plugin in plugins:
             if plugin.name not in installed:
                 if plugin.status == STATUS_ACTIVE:
@@ -277,28 +307,26 @@ class PluginReconciler(looper_basic.BasicService):
                 )
                 to_install.append(plugin)
             else:
-                plugin.status = STATUS_ACTIVE
-                plugin.save()
-                newly_activated.append(plugin.name)
-                LOG.info("Plugin %s is active", plugin.name)
+                to_reload.append(plugin)
 
-        if not to_install and not newly_activated:
-            return
-
-        installed_any = False
         for plugin in to_install:
             if self._install(plugin):
-                # Mark ACTIVE immediately so URL/URN-based packages don't
-                # reinstall on the next gservice startup before routes/services
-                # reload.
-                if plugin.status != STATUS_ACTIVE:
-                    plugin.status = STATUS_ACTIVE
-                    plugin.save()
-                installed_any = True
-                LOG.info("Plugin %s installed and marked active", plugin.name)
+                to_reload.append(plugin)
 
-        if installed_any or newly_activated:
-            self._signal_user_api()
+        pending_reload = [
+            plugin
+            for plugin in to_reload
+            if self._transition_status(plugin, STATUS_RELOAD_PENDING)
+        ]
+        if not pending_reload or not self._reload_user_api():
+            return
+
+        activated = False
+        for plugin in pending_reload:
+            if self._transition_status(plugin, STATUS_ACTIVE):
+                activated = True
+                LOG.info("Plugin %s is active", plugin.name)
+        if activated:
             self._restart_detached()
 
 

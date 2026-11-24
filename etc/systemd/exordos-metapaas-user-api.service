@@ -3,12 +3,19 @@ Description=Exordos MetaPaaS User API
 After=network-online.target postgresql.service
 
 [Service]
-TimeoutStopSec=5
+TimeoutStartSec=130
+TimeoutStopSec=35
+RuntimeDirectory=exordos-metapaas-user-api
+RuntimeDirectoryMode=0700
 Restart=on-failure
 RestartSec=5s
-KillSignal=SIGINT
+KillMode=mixed
+KillSignal=SIGTERM
 ExecStartPre=/bin/sleep 2
 ExecStart=exordos-metapaas-user-api --config-file /etc/exordos_metapaas/exordos_metapaas.conf --config-dir /etc/exordos_metapaas/exordos_metapaas.d
+ExecReload=/opt/exordos_metapaas/.venv/bin/python -m gcl_looper.services.reload_control
+# Recover if a manual SIGHUP arrives before the supervisor is ready.
+RestartForceExitStatus=SIGHUP
 
 [Install]
 WantedBy=multi-user.target

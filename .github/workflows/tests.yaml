@@ -54,6 +54,9 @@ jobs:
         run: uv tool install tox --with tox-uv
       - name: Unit tests
         run: tox -e ${{ matrix.python-version }}
+      - name: API reload tests
+        if: matrix.python-version == '3.12'
+        run: tox exec -e 3.12 -- python -m pytest -q exordos_metapaas/tests/functional/test_api_reload.py
 
   Coverage:
     runs-on: ubuntu-24.04
